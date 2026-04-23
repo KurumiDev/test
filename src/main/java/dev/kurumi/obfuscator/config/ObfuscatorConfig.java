@@ -56,6 +56,14 @@ public class ObfuscatorConfig {
     private final boolean invokeDynamicAutoDetectLambdas;
 
     private final boolean classLiteralEnabled;
+    private final boolean stringConcatEnabled;
+    private final boolean indyCallEnabled;
+    private final boolean junkCodeEnabled;
+    private final boolean accessFlagsEnabled;
+    private final boolean memberShufflerEnabled;
+    private final boolean sourceScrubEnabled;
+    private final boolean blobStringEnabled;
+    private final boolean localVarTableEnabled;
 
     private final boolean localVarEnabled;
 
@@ -91,6 +99,14 @@ public class ObfuscatorConfig {
         this.invokeDynamicEnabled = b.invokeDynamicEnabled;
         this.invokeDynamicAutoDetectLambdas = b.invokeDynamicAutoDetectLambdas;
         this.classLiteralEnabled = b.classLiteralEnabled;
+        this.stringConcatEnabled = b.stringConcatEnabled;
+        this.indyCallEnabled = b.indyCallEnabled;
+        this.junkCodeEnabled = b.junkCodeEnabled;
+        this.accessFlagsEnabled = b.accessFlagsEnabled;
+        this.memberShufflerEnabled = b.memberShufflerEnabled;
+        this.sourceScrubEnabled = b.sourceScrubEnabled;
+        this.blobStringEnabled = b.blobStringEnabled;
+        this.localVarTableEnabled = b.localVarTableEnabled;
         this.localVarEnabled = b.localVarEnabled;
         this.exemptions = List.copyOf(b.exemptions);
         this.autoExempt = b.autoExempt;
@@ -142,6 +158,14 @@ public class ObfuscatorConfig {
         if (c.hasPath("transformers.invokedynamic.auto-detect-lambdas")) b.invokeDynamicAutoDetectLambdas = c.getBoolean("transformers.invokedynamic.auto-detect-lambdas");
 
         if (c.hasPath("transformers.class-literal.enabled")) b.classLiteralEnabled = c.getBoolean("transformers.class-literal.enabled");
+        if (c.hasPath("transformers.string-concat.enabled")) b.stringConcatEnabled = c.getBoolean("transformers.string-concat.enabled");
+        if (c.hasPath("transformers.indy-call.enabled")) b.indyCallEnabled = c.getBoolean("transformers.indy-call.enabled");
+        if (c.hasPath("transformers.junk-code.enabled")) b.junkCodeEnabled = c.getBoolean("transformers.junk-code.enabled");
+        if (c.hasPath("transformers.access-flags.enabled")) b.accessFlagsEnabled = c.getBoolean("transformers.access-flags.enabled");
+        if (c.hasPath("transformers.member-shuffler.enabled")) b.memberShufflerEnabled = c.getBoolean("transformers.member-shuffler.enabled");
+        if (c.hasPath("transformers.source-scrub.enabled")) b.sourceScrubEnabled = c.getBoolean("transformers.source-scrub.enabled");
+        if (c.hasPath("transformers.blob-string.enabled")) b.blobStringEnabled = c.getBoolean("transformers.blob-string.enabled");
+        if (c.hasPath("transformers.local-variable-table.enabled")) b.localVarTableEnabled = c.getBoolean("transformers.local-variable-table.enabled");
 
         if (c.hasPath("transformers.local-variable.enabled")) b.localVarEnabled = c.getBoolean("transformers.local-variable.enabled");
 
@@ -201,6 +225,14 @@ public class ObfuscatorConfig {
             case "number-obfuscation" -> numberEnabled;
             case "invokedynamic" -> invokeDynamicEnabled;
             case "class-literal" -> classLiteralEnabled;
+            case "string-concat" -> stringConcatEnabled;
+            case "indy-call" -> indyCallEnabled;
+            case "junk-code" -> junkCodeEnabled;
+            case "access-flags" -> accessFlagsEnabled;
+            case "member-shuffler" -> memberShufflerEnabled;
+            case "source-scrub" -> sourceScrubEnabled;
+            case "blob-string" -> blobStringEnabled;
+            case "local-variable-table" -> localVarTableEnabled;
             case "local-variable" -> localVarEnabled;
             default -> true;
         };
@@ -238,6 +270,14 @@ public class ObfuscatorConfig {
         public boolean invokeDynamicAutoDetectLambdas = true;
 
         public boolean classLiteralEnabled = true;
+        public boolean stringConcatEnabled = true;
+        public boolean indyCallEnabled = false; // opt-in: heavier but strongest
+        public boolean junkCodeEnabled = true;
+        public boolean accessFlagsEnabled = true;
+        public boolean memberShufflerEnabled = true;
+        public boolean sourceScrubEnabled = true;
+        public boolean blobStringEnabled = false; // opt-in: replaces string-encryption
+        public boolean localVarTableEnabled = true;
 
         public boolean localVarEnabled = true;
 

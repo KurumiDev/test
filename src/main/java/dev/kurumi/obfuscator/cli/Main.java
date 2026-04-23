@@ -133,6 +133,15 @@ public class Main implements Callable<Integer> {
         b.opaqueEnabled = loaded.isTransformerEnabled("opaque-predicates");
         b.numberEnabled = loaded.isTransformerEnabled("number-obfuscation");
         b.invokeDynamicEnabled = loaded.isTransformerEnabled("invokedynamic");
+        b.classLiteralEnabled = loaded.isTransformerEnabled("class-literal");
+        b.stringConcatEnabled = loaded.isTransformerEnabled("string-concat");
+        b.indyCallEnabled = loaded.isTransformerEnabled("indy-call");
+        b.junkCodeEnabled = loaded.isTransformerEnabled("junk-code");
+        b.accessFlagsEnabled = loaded.isTransformerEnabled("access-flags");
+        b.memberShufflerEnabled = loaded.isTransformerEnabled("member-shuffler");
+        b.sourceScrubEnabled = loaded.isTransformerEnabled("source-scrub");
+        b.blobStringEnabled = loaded.isTransformerEnabled("blob-string");
+        b.localVarTableEnabled = loaded.isTransformerEnabled("local-variable-table");
         b.localVarEnabled = loaded.isTransformerEnabled("local-variable");
         return b;
     }

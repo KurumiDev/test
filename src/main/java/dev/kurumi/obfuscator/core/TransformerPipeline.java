@@ -4,14 +4,22 @@ import dev.kurumi.obfuscator.analysis.AnnotationScanner;
 import dev.kurumi.obfuscator.analysis.DependencyAnalyzer;
 import dev.kurumi.obfuscator.analysis.InheritanceAnalyzer;
 import dev.kurumi.obfuscator.config.ObfuscatorConfig;
+import dev.kurumi.obfuscator.transformers.AccessFlagObfuscator;
+import dev.kurumi.obfuscator.transformers.BlobStringTransformer;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
 import dev.kurumi.obfuscator.transformers.ClassLiteralTransformer;
 import dev.kurumi.obfuscator.transformers.FlowObfuscationTransformer;
+import dev.kurumi.obfuscator.transformers.IndyCallTransformer;
 import dev.kurumi.obfuscator.transformers.InvokeDynamicTransformer;
+import dev.kurumi.obfuscator.transformers.JunkCodeInjector;
+import dev.kurumi.obfuscator.transformers.LocalVariableTableObfuscator;
 import dev.kurumi.obfuscator.transformers.LocalVariableTransformer;
+import dev.kurumi.obfuscator.transformers.MemberShufflerTransformer;
 import dev.kurumi.obfuscator.transformers.NumberObfuscationTransformer;
 import dev.kurumi.obfuscator.transformers.OpaquePredicateTransformer;
 import dev.kurumi.obfuscator.transformers.RenamerTransformer;
+import dev.kurumi.obfuscator.transformers.SourceAttributeScrubber;
+import dev.kurumi.obfuscator.transformers.StringConcatTransformer;
 import dev.kurumi.obfuscator.transformers.StringEncryptionTransformer;
 import dev.kurumi.obfuscator.verify.BytecodeVerifier;
 import org.slf4j.Logger;
@@ -49,7 +57,15 @@ public class TransformerPipeline {
         // 4. Class literal rewriting — emits LDC strings consumed by the next pass
         transformers.add(new ClassLiteralTransformer());
 
-        // 5. String encryption
+        // 5. makeConcatWithConstants → StringBuilder chain (also produces LDC strings)
+        transformers.add(new StringConcatTransformer());
+
+        // 6a. Optional: blob-string packs all LDCs into a per-class encrypted
+        //     byte[] BEFORE string-encryption. When enabled it consumes every
+        //     LDC string so StringEncryption has nothing to wrap.
+        transformers.add(new BlobStringTransformer());
+
+        // 6b. String encryption (sees every remaining LDC string)
         transformers.add(new StringEncryptionTransformer());
 
         // 5. Bogus exception wrapping (lightweight flow distortion)
@@ -64,8 +80,22 @@ public class TransformerPipeline {
         // 8. InvokeDynamic (last major pass, with lambda-guard)
         transformers.add(new InvokeDynamicTransformer());
 
-        // 9. Cosmetic local var cleanup
+        // 9. Indy-call wrapping for cross-pool method calls
+        transformers.add(new IndyCallTransformer());
+
+        // 10. Decoy methods
+        transformers.add(new JunkCodeInjector());
+
+        // 11. Cosmetic: access flags, member order, source attributes
+        transformers.add(new AccessFlagObfuscator());
+        transformers.add(new MemberShufflerTransformer());
+        transformers.add(new SourceAttributeScrubber());
+
+        // 12. Local var table cleanup (strip debug LocalVariableTable)
         transformers.add(new LocalVariableTransformer());
+
+        // 13. Synthetic LocalVariableTable with confusing names (after strip)
+        transformers.add(new LocalVariableTableObfuscator());
     }
 
     public void execute(ClassPool pool, ObfuscatorContext ctx) {

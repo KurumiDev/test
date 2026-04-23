@@ -274,6 +274,12 @@ public class RenamerTransformer implements Transformer {
         // Then union with matching ancestors. When an ancestor is external and we
         // cannot prove the method is new, we still add the external id as an
         // "exempt anchor" so the entire group becomes exempt.
+        //
+        // Exception: java.lang.Object (and other JDK base types) is an ancestor
+        // of every class and is never loaded into our pool/library. Blindly
+        // exempting on unknown ancestor there would exempt every virtual method
+        // in the program. Instead, for JDK-package ancestors we only exempt
+        // methods that match a well-known Object signature.
         Set<String> exemptGroups = new HashSet<>();
         for (ClassNode cn : pool.allClassNodes()) {
             for (MethodNode mn : cn.methods) {
@@ -283,9 +289,17 @@ public class RenamerTransformer implements Transformer {
                     if (ancestor.equals(cn.name)) continue;
                     ClassNode anc = pool.find(ancestor);
                     if (anc == null) {
-                        // External ancestor we have no data for; mark the method
-                        // group as exempt (could be overriding an API method).
-                        exemptGroups.add(selfId);
+                        if (isJdkAncestor(ancestor)) {
+                            if (isJdkObjectMethod(mn.name, mn.desc)) {
+                                exemptGroups.add(selfId);
+                            }
+                            // else: we know JDK Object-family classes do not
+                            // declare user method names → safe to skip.
+                        } else {
+                            // External non-JDK ancestor (platform API we don't
+                            // have a library jar for): stay conservative.
+                            exemptGroups.add(selfId);
+                        }
                         continue;
                     }
                     for (MethodNode am : anc.methods) {
@@ -308,7 +322,12 @@ public class RenamerTransformer implements Transformer {
         for (Map.Entry<String, List<String>> e : groups.entrySet()) {
             String root = e.getKey();
             List<String> members = e.getValue();
-            boolean exempt = exemptGroups.contains(root) || membersAreExempt(pool, ctx, ann, members);
+            // exemptGroups is keyed by the raw selfId that was flagged as an
+            // exempt anchor. After union-find, that id may or may not be the
+            // group root, so we check every member — any one being exempt
+            // poisons the whole group.
+            boolean exempt = members.stream().anyMatch(exemptGroups::contains)
+                    || membersAreExempt(pool, ctx, ann, members);
             if (exempt) continue;
             groupNewName.put(root, gen.next());
         }
@@ -352,6 +371,35 @@ public class RenamerTransformer implements Transformer {
         if ((acc & (Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE)) != 0) return false;
         if (mn.name.startsWith("<")) return false;
         return true;
+    }
+
+    private static final Set<String> JDK_PACKAGE_PREFIXES = Set.of(
+            "java/", "javax/", "jdk/", "sun/", "com/sun/"
+    );
+
+    private static final Set<String> OBJECT_VIRTUAL_SIGNATURES = Set.of(
+            "equals(Ljava/lang/Object;)Z",
+            "hashCode()I",
+            "toString()Ljava/lang/String;",
+            "clone()Ljava/lang/Object;",
+            "finalize()V",
+            "getClass()Ljava/lang/Class;",
+            "notify()V",
+            "notifyAll()V",
+            "wait()V",
+            "wait(J)V",
+            "wait(JI)V"
+    );
+
+    private static boolean isJdkAncestor(String internal) {
+        for (String p : JDK_PACKAGE_PREFIXES) {
+            if (internal.startsWith(p)) return true;
+        }
+        return false;
+    }
+
+    private static boolean isJdkObjectMethod(String name, String desc) {
+        return OBJECT_VIRTUAL_SIGNATURES.contains(name + desc);
     }
 
     private static String methodId(String owner, String name, String desc) {

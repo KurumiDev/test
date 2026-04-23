@@ -63,6 +63,7 @@ public class FlowObfuscationTransformer implements Transformer {
                 case ALL -> {
                     any |= bogusJumps(mn);
                     any |= gotoSpaghetti(mn);
+                    any |= exceptionWrap(mn);
                 }
             }
         }
@@ -183,14 +184,22 @@ public class FlowObfuscationTransformer implements Transformer {
         LabelNode end = new LabelNode();
         LabelNode handler = new LabelNode();
         LabelNode after = new LabelNode();
+
         InsnList pre = new InsnList();
         pre.add(begin);
         insns.insertBefore(start, pre);
+
+        // The handler rethrows unconditionally. That keeps the handler's
+        // terminating stack state from propagating into `after:` — only the
+        // normal GOTO path (stack === stack at `end`) reaches `after:`, so the
+        // verifier never sees the "incompatible stack heights" conflict that
+        // happens when a POP'd handler falls through into an arbitrary
+        // mid-expression point.
         InsnList post = new InsnList();
         post.add(end);
         post.add(new JumpInsnNode(Opcodes.GOTO, after));
         post.add(handler);
-        post.add(new InsnNode(Opcodes.POP));
+        post.add(new InsnNode(Opcodes.ATHROW));
         post.add(after);
         insns.insert(start, post);
         mn.tryCatchBlocks.add(new org.objectweb.asm.tree.TryCatchBlockNode(begin, end, handler, "java/lang/Throwable"));

@@ -80,6 +80,10 @@ public class ClassPool {
         return classNodes.values();
     }
 
+    public boolean containsClass(String internalName) {
+        return classNodes.containsKey(internalName);
+    }
+
     public Map<String, byte[]> resources() {
         return resources;
     }
