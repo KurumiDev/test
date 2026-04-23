@@ -47,7 +47,63 @@ transformers {
         auto-detect-lambdas = true
     }
 
+    # Rewrites Foo.class references into Class.forName(decrypt(…)).
+    class-literal {
+        enabled = true
+    }
+
+    # Expands makeConcatWithConstants into StringBuilder chains so the
+    # recipe string literals become LDC constants that downstream string
+    # encryption can wrap.
+    string-concat {
+        enabled = true
+    }
+
+    # Packs all LDC strings of a class into a single encrypted byte[] blob
+    # with a position-dependent key schedule. Alternative to per-string XOR
+    # encryption; when enabled, regular string-encryption processes only
+    # strings that appear AFTER this pass (class-literal output, etc.).
+    blob-string {
+        enabled = false              # opt-in, heavier
+    }
+
+    # Wraps cross-pool INVOKESTATIC/VIRTUAL/INTERFACE calls in invokedynamic
+    # with a custom bootstrap that resolves encrypted owner/name/descriptor
+    # at link time. Breaks CFR/Fernflower/Procyon completely.
+    indy-call {
+        enabled = false              # opt-in, strongest
+    }
+
+    # Injects realistic-looking dead synthetic methods as reverser traps.
+    junk-code {
+        enabled = true
+    }
+
+    # Marks user methods/fields ACC_SYNTHETIC so IDEs hide them from
+    # autocomplete.
+    access-flags {
+        enabled = true
+    }
+
+    # Randomizes method/field order within each class. Breaks diff tools.
+    member-shuffler {
+        enabled = true
+    }
+
+    # Strips SourceFile/SourceDebugExtension and injects a plausible fake.
+    source-scrub {
+        enabled = true
+    }
+
+    # Strips the debug LocalVariableTable attribute.
     local-variable {
+        enabled = true
+    }
+
+    # Injects a synthetic LocalVariableTable with reserved Java keywords /
+    # zero-width chars / confusables as variable names. Decompilers that
+    # respect the LVT (CFR, Fernflower) will emit uncompilable source.
+    local-variable-table {
         enabled = true
     }
 }
