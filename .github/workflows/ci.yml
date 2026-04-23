@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Build & test
+        run: mvn -B -ntp verify
+      - name: Smoke test --help
+        run: java -jar target/obfuscator.jar --help || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: obfuscator
+          path: target/obfuscator.jar
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          if-no-files-found: ignore

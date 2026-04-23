@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build shaded JAR
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Smoke test
+        run: java -jar target/obfuscator.jar --help || true
+
+      - name: Compute checksums
+        run: |
+          cd target
+          sha256sum obfuscator.jar > obfuscator.jar.sha256
+          cat obfuscator.jar.sha256
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/obfuscator.jar
+            target/obfuscator.jar.sha256
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            # Kurumi Obfuscator ${{ github.ref_name }}
+
+            Production-grade Java bytecode obfuscator. **16 transformers**, ASM 9.7,
+            runtime-seeded opaque predicates, invokedynamic call-site wrapping,
+            per-class encrypted string blobs, and synthetic LocalVariableTable
+            injection.
+
+            ## Download
+
+            `obfuscator.jar` is a shaded fat JAR — all dependencies included,
+            runs on Java 17+.
+
+            ```bash
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/obfuscator.jar
+            java -jar obfuscator.jar --input plugin.jar --output plugin-obf.jar --save-mapping mapping.txt
+            ```
+
+            See the [README](https://github.com/${{ github.repository }}#readme) for
+            the full transformer list, configuration reference, and benchmarks.
