@@ -74,7 +74,11 @@ public class TransformerPipeline {
         // 6. Flow obfuscation: heavy bytecode mutation
         transformers.add(new FlowObfuscationTransformer());
 
-        // 7. Opaque predicates
+        // 7a. Decoy / honeypot methods (must precede opaque-predicates so
+        //     predicates can reference honeypot methods by name).
+        transformers.add(new JunkCodeInjector());
+
+        // 7b. Opaque predicates (may call honeypots emitted by 7a)
         transformers.add(new OpaquePredicateTransformer());
 
         // 8. InvokeDynamic (last major pass, with lambda-guard)
@@ -82,9 +86,6 @@ public class TransformerPipeline {
 
         // 9. Indy-call wrapping for cross-pool method calls
         transformers.add(new IndyCallTransformer());
-
-        // 10. Decoy methods
-        transformers.add(new JunkCodeInjector());
 
         // 11. Cosmetic: access flags, member order, source attributes
         transformers.add(new AccessFlagObfuscator());
