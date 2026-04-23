@@ -40,10 +40,11 @@ public class RetraceTool {
                 String newRight = trimmed.substring(arrow + 4);
                 boolean isField = origLeft.startsWith("#");
                 if (isField) origLeft = origLeft.substring(1);
-                // methods look like "foo(I)V"; fields look like "bar:I"
+                // methods look like "foo(I)V"; fields look like "bar" or "bar:I"
                 String origSimple;
                 if (isField) {
-                    origSimple = origLeft.substring(0, origLeft.indexOf(':'));
+                    int colon = origLeft.indexOf(':');
+                    origSimple = colon < 0 ? origLeft : origLeft.substring(0, colon);
                 } else {
                     int paren = origLeft.indexOf('(');
                     origSimple = paren < 0 ? origLeft : origLeft.substring(0, paren);
