@@ -90,23 +90,85 @@ public class FlowObfuscationTransformer implements Transformer {
         return true;
     }
 
-    /** Cut the instruction stream in two, link with GOTO back and forth. */
+    /**
+     * Rotate the instruction stream around a midpoint. Original flow A; B
+     * (with B reachable via fall-through) becomes:
+     *
+     * <pre>
+     *   GOTO first_half       // forces decompilers to abandon linear reading
+     *   second_label:
+     *     B
+     *   first_half:
+     *     A
+     *     GOTO second_label
+     * </pre>
+     *
+     * <p>Semantically identical: control still flows A → B. But the physical
+     * order in the bytecode is B, A — CFR and Fernflower's structured
+     * recognizers get confused and emit labeled loops or unreachable-block
+     * warnings.
+     *
+     * <p>Skipped if the method contains try/catch blocks (moving chunks across
+     * handler ranges would require rewriting every TryCatchBlockNode's begin/end).
+     */
     private boolean gotoSpaghetti(MethodNode mn) {
         InsnList insns = mn.instructions;
         if (insns.size() < 10) return false;
-        AbstractInsnNode cut = pickInsertionPoint(mn);
-        if (cut == null) return false;
-        LabelNode tail = new LabelNode();
-        LabelNode jumpBack = new LabelNode();
-        InsnList before = new InsnList();
-        before.add(new JumpInsnNode(Opcodes.GOTO, tail));
-        before.add(jumpBack);
-        insns.insertBefore(cut, before);
-        InsnList afterCut = new InsnList();
-        afterCut.add(tail);
-        afterCut.add(new JumpInsnNode(Opcodes.GOTO, jumpBack));
-        insns.insertBefore(cut, afterCut);
+        if (mn.tryCatchBlocks != null && !mn.tryCatchBlocks.isEmpty()) return false;
+
+        // Pick a cut point: a label node, not too close to either end.
+        LabelNode cutLabel = pickSplitLabel(mn);
+        if (cutLabel == null) return false;
+
+        AbstractInsnNode first = insns.getFirst();
+        AbstractInsnNode last = insns.getLast();
+        if (first == null || last == null) return false;
+
+        LabelNode firstHalfLbl = new LabelNode();
+
+        // Detach chunk A = [first .. node-before-cutLabel] into a new list.
+        InsnList chunkA = new InsnList();
+        AbstractInsnNode cursor = first;
+        while (cursor != null && cursor != cutLabel) {
+            AbstractInsnNode next = cursor.getNext();
+            insns.remove(cursor);
+            chunkA.add(cursor);
+            cursor = next;
+        }
+        // Sanity: if chunk A is empty or cutLabel not found, bail.
+        if (cursor != cutLabel || chunkA.size() == 0) {
+            // Restore if we corrupted anything (shouldn't happen — just rebuild)
+            insns.insert(chunkA);
+            return false;
+        }
+
+        // Prepend "GOTO firstHalfLbl" at the (new) head of insns (before cutLabel).
+        InsnList newHead = new InsnList();
+        newHead.add(new JumpInsnNode(Opcodes.GOTO, firstHalfLbl));
+        insns.insert(newHead);
+
+        // Append firstHalfLbl, chunkA, GOTO cutLabel at the very end.
+        InsnList tail = new InsnList();
+        tail.add(firstHalfLbl);
+        tail.add(chunkA);
+        tail.add(new JumpInsnNode(Opcodes.GOTO, cutLabel));
+        insns.add(tail);
         return true;
+    }
+
+    private LabelNode pickSplitLabel(MethodNode mn) {
+        InsnList insns = mn.instructions;
+        java.util.List<LabelNode> candidates = new java.util.ArrayList<>();
+        int idx = 0;
+        int size = insns.size();
+        for (AbstractInsnNode node : insns.toArray()) {
+            idx++;
+            // Keep a middle band; avoid first 3 and last 3 insns.
+            if (idx <= 3 || idx >= size - 2) continue;
+            if (node instanceof LabelNode lbl) candidates.add(lbl);
+        }
+        if (candidates.isEmpty()) return null;
+        return candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
     }
 
     /**

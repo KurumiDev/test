@@ -5,6 +5,7 @@ import dev.kurumi.obfuscator.analysis.DependencyAnalyzer;
 import dev.kurumi.obfuscator.analysis.InheritanceAnalyzer;
 import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
+import dev.kurumi.obfuscator.transformers.ClassLiteralTransformer;
 import dev.kurumi.obfuscator.transformers.FlowObfuscationTransformer;
 import dev.kurumi.obfuscator.transformers.InvokeDynamicTransformer;
 import dev.kurumi.obfuscator.transformers.LocalVariableTransformer;
@@ -45,7 +46,10 @@ public class TransformerPipeline {
         // 3. Number obfuscation BEFORE flow, so jump targets stay stable
         transformers.add(new NumberObfuscationTransformer());
 
-        // 4. String encryption
+        // 4. Class literal rewriting — emits LDC strings consumed by the next pass
+        transformers.add(new ClassLiteralTransformer());
+
+        // 5. String encryption
         transformers.add(new StringEncryptionTransformer());
 
         // 5. Bogus exception wrapping (lightweight flow distortion)

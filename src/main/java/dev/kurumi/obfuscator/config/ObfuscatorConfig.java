@@ -55,6 +55,8 @@ public class ObfuscatorConfig {
     private final boolean invokeDynamicEnabled;
     private final boolean invokeDynamicAutoDetectLambdas;
 
+    private final boolean classLiteralEnabled;
+
     private final boolean localVarEnabled;
 
     private final List<String> exemptions;
@@ -88,6 +90,7 @@ public class ObfuscatorConfig {
         this.numberOnlyMagic = b.numberOnlyMagic;
         this.invokeDynamicEnabled = b.invokeDynamicEnabled;
         this.invokeDynamicAutoDetectLambdas = b.invokeDynamicAutoDetectLambdas;
+        this.classLiteralEnabled = b.classLiteralEnabled;
         this.localVarEnabled = b.localVarEnabled;
         this.exemptions = List.copyOf(b.exemptions);
         this.autoExempt = b.autoExempt;
@@ -137,6 +140,8 @@ public class ObfuscatorConfig {
 
         if (c.hasPath("transformers.invokedynamic.enabled")) b.invokeDynamicEnabled = c.getBoolean("transformers.invokedynamic.enabled");
         if (c.hasPath("transformers.invokedynamic.auto-detect-lambdas")) b.invokeDynamicAutoDetectLambdas = c.getBoolean("transformers.invokedynamic.auto-detect-lambdas");
+
+        if (c.hasPath("transformers.class-literal.enabled")) b.classLiteralEnabled = c.getBoolean("transformers.class-literal.enabled");
 
         if (c.hasPath("transformers.local-variable.enabled")) b.localVarEnabled = c.getBoolean("transformers.local-variable.enabled");
 
@@ -195,6 +200,7 @@ public class ObfuscatorConfig {
             case "opaque-predicates" -> opaqueEnabled;
             case "number-obfuscation" -> numberEnabled;
             case "invokedynamic" -> invokeDynamicEnabled;
+            case "class-literal" -> classLiteralEnabled;
             case "local-variable" -> localVarEnabled;
             default -> true;
         };
@@ -230,6 +236,8 @@ public class ObfuscatorConfig {
 
         public boolean invokeDynamicEnabled = false;
         public boolean invokeDynamicAutoDetectLambdas = true;
+
+        public boolean classLiteralEnabled = true;
 
         public boolean localVarEnabled = true;
 

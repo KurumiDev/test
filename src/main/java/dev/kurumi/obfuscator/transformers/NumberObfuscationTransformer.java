@@ -40,14 +40,23 @@ public class NumberObfuscationTransformer implements Transformer {
                 if (mn.name.startsWith("<")) continue;
                 if (mn.name.startsWith("$obf")) continue;
                 for (AbstractInsnNode insn : mn.instructions.toArray()) {
-                    Integer value = intConstant(insn);
-                    if (value == null) continue;
-                    if (onlyMagic && Math.abs(value) < 10) continue;
-                    InsnList rep = obfInt(value);
-                    if (rep == null) continue;
-                    mn.instructions.insert(insn, rep);
-                    mn.instructions.remove(insn);
-                    replaced++;
+                    Integer iv = intConstant(insn);
+                    if (iv != null) {
+                        if (onlyMagic && isTrivialInt(iv)) continue;
+                        InsnList rep = obfInt(iv);
+                        mn.instructions.insert(insn, rep);
+                        mn.instructions.remove(insn);
+                        replaced++;
+                        continue;
+                    }
+                    Long lv = longConstant(insn);
+                    if (lv != null) {
+                        if (onlyMagic && isTrivialLong(lv)) continue;
+                        InsnList rep = obfLong(lv);
+                        mn.instructions.insert(insn, rep);
+                        mn.instructions.remove(insn);
+                        replaced++;
+                    }
                 }
             }
         }
@@ -60,6 +69,23 @@ public class NumberObfuscationTransformer implements Transformer {
         if (insn instanceof IntInsnNode i && (op == Opcodes.BIPUSH || op == Opcodes.SIPUSH)) return i.operand;
         if (insn instanceof LdcInsnNode l && l.cst instanceof Integer i) return i;
         return null;
+    }
+
+    private Long longConstant(AbstractInsnNode insn) {
+        int op = insn.getOpcode();
+        if (op == Opcodes.LCONST_0) return 0L;
+        if (op == Opcodes.LCONST_1) return 1L;
+        if (insn instanceof LdcInsnNode l && l.cst instanceof Long lv) return lv;
+        return null;
+    }
+
+    // Keep tiny constants readable: -1, 0, 1, 2 are almost always loop counters / sentinels.
+    private static boolean isTrivialInt(int v) {
+        return v >= -1 && v <= 2;
+    }
+
+    private static boolean isTrivialLong(long v) {
+        return v == 0L || v == 1L;
     }
 
     private InsnList obfInt(int value) {
@@ -85,6 +111,34 @@ public class NumberObfuscationTransformer implements Transformer {
                 il.add(push(~value));
                 il.add(new InsnNode(Opcodes.ICONST_M1));
                 il.add(new InsnNode(Opcodes.IXOR));
+            }
+        }
+        return il;
+    }
+
+    private InsnList obfLong(long value) {
+        ThreadLocalRandom r = ThreadLocalRandom.current();
+        int style = r.nextInt(3);
+        long a = r.nextLong();
+        InsnList il = new InsnList();
+        switch (style) {
+            case 0 -> {
+                // value = a XOR (a XOR value)
+                il.add(new LdcInsnNode(a));
+                il.add(new LdcInsnNode(a ^ value));
+                il.add(new InsnNode(Opcodes.LXOR));
+            }
+            case 1 -> {
+                // value = (a + value) - a
+                il.add(new LdcInsnNode(a + value));
+                il.add(new LdcInsnNode(a));
+                il.add(new InsnNode(Opcodes.LSUB));
+            }
+            default -> {
+                // value = ~(~value) via long XOR with -1L
+                il.add(new LdcInsnNode(~value));
+                il.add(new LdcInsnNode(-1L));
+                il.add(new InsnNode(Opcodes.LXOR));
             }
         }
         return il;

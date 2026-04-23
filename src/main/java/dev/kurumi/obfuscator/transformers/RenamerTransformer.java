@@ -83,28 +83,149 @@ public class RenamerTransformer implements Transformer {
                 ctx.methodMapping().size() + ctx.fieldMapping().size());
     }
 
+    /**
+     * Targeted scan for class references that the JVM or host platform will
+     * look up reflectively by fully-qualified name. We deliberately do NOT do
+     * a "find every dotted name in every text resource" pass — that treats
+     * unrelated files (pom.xml with a groupId, localized config strings) as
+     * reflection pins and stops legitimate renames.
+     *
+     * Protected contexts:
+     *   - plugin.yml / paper-plugin.yml / bungee.yml / velocity-plugin.json:
+     *     "main:" (and Velocity's explicit main class field).
+     *   - fabric.mod.json: entrypoints.* values (strip leading "::" or adapter prefix).
+     *   - mods.toml / neoforge.mods.toml: not required (@Mod handles it),
+     *     but we still honour a "mainClass=" line if present.
+     *   - META-INF/services/*: every non-blank, non-comment line is a FQN.
+     *   - META-INF/MANIFEST.MF: Main-Class, Premain-Class, Agent-Class.
+     */
     private Set<String> scanResourceReferences(ClassPool pool) {
         Set<String> referenced = new HashSet<>();
+        Set<String> internalSet = pool.classes().keySet();
         for (Map.Entry<String, byte[]> e : pool.resources().entrySet()) {
             String name = e.getKey();
-            if (!looksTextual(name)) continue;
-            String content = new String(e.getValue(), StandardCharsets.UTF_8);
-            for (String internal : pool.classes().keySet()) {
-                String dotted = internal.replace('/', '.');
-                if (content.contains(dotted)) {
-                    referenced.add(internal);
+            byte[] body = e.getValue();
+            String lower = name.toLowerCase();
+
+            if (name.startsWith("META-INF/services/")) {
+                String svcName = name.substring("META-INF/services/".length());
+                // the service name itself is a FQN
+                pinIfPresent(internalSet, svcName, referenced);
+                for (String line : utf8Lines(body)) {
+                    line = stripComment(line).trim();
+                    if (!line.isEmpty()) pinIfPresent(internalSet, line, referenced);
+                }
+                continue;
+            }
+
+            if ("META-INF/MANIFEST.MF".equalsIgnoreCase(name)) {
+                for (String line : utf8Lines(body)) {
+                    String v = stripManifestKey(line, "Main-Class");
+                    if (v == null) v = stripManifestKey(line, "Premain-Class");
+                    if (v == null) v = stripManifestKey(line, "Agent-Class");
+                    if (v != null) pinIfPresent(internalSet, v.trim(), referenced);
+                }
+                continue;
+            }
+
+            if (lower.endsWith("plugin.yml") || lower.endsWith("paper-plugin.yml")
+                    || lower.endsWith("bungee.yml")) {
+                for (String line : utf8Lines(body)) {
+                    String v = stripYamlKey(line, "main");
+                    if (v != null) pinIfPresent(internalSet, v, referenced);
+                }
+                continue;
+            }
+
+            if (lower.endsWith("velocity-plugin.json") || lower.endsWith("fabric.mod.json")) {
+                // cheap JSON walk — not a full parser, but good enough for "main":"FQN" and entrypoint arrays
+                String content = new String(body, StandardCharsets.UTF_8);
+                for (String quoted : jsonStringValues(content)) {
+                    String candidate = quoted;
+                    int colon = candidate.indexOf("::");
+                    if (colon >= 0) candidate = candidate.substring(0, colon);
+                    if (candidate.contains("::")) continue;
+                    pinIfPresent(internalSet, candidate.trim(), referenced);
+                }
+                continue;
+            }
+
+            if (lower.endsWith("mods.toml") || lower.endsWith("neoforge.mods.toml")) {
+                for (String line : utf8Lines(body)) {
+                    String v = stripTomlKey(line, "mainClass");
+                    if (v != null) pinIfPresent(internalSet, v, referenced);
                 }
             }
         }
         return referenced;
     }
 
-    private boolean looksTextual(String name) {
-        String lower = name.toLowerCase();
-        return lower.endsWith(".yml") || lower.endsWith(".yaml") || lower.endsWith(".json")
-                || lower.endsWith(".toml") || lower.endsWith(".properties")
-                || lower.endsWith(".txt") || lower.endsWith(".mf")
-                || lower.endsWith(".xml") || lower.endsWith(".cfg") || lower.endsWith(".conf");
+    private static void pinIfPresent(Set<String> classes, String dotted, Set<String> out) {
+        if (dotted == null || dotted.isEmpty()) return;
+        String internal = dotted.replace('.', '/');
+        if (classes.contains(internal)) out.add(internal);
+    }
+
+    private static List<String> utf8Lines(byte[] data) {
+        return List.of(new String(data, StandardCharsets.UTF_8).split("\\r?\\n", -1));
+    }
+
+    private static String stripComment(String s) {
+        int hash = s.indexOf('#');
+        return hash < 0 ? s : s.substring(0, hash);
+    }
+
+    private static String stripManifestKey(String line, String key) {
+        int colon = line.indexOf(':');
+        if (colon < 0) return null;
+        if (!line.substring(0, colon).trim().equalsIgnoreCase(key)) return null;
+        return line.substring(colon + 1).trim();
+    }
+
+    private static String stripYamlKey(String line, String key) {
+        String t = stripComment(line);
+        int colon = t.indexOf(':');
+        if (colon < 0) return null;
+        if (!t.substring(0, colon).trim().equalsIgnoreCase(key)) return null;
+        String v = t.substring(colon + 1).trim();
+        if ((v.startsWith("\"") && v.endsWith("\"") && v.length() >= 2)
+                || (v.startsWith("'") && v.endsWith("'") && v.length() >= 2)) {
+            v = v.substring(1, v.length() - 1);
+        }
+        return v;
+    }
+
+    private static String stripTomlKey(String line, String key) {
+        String t = stripComment(line);
+        int eq = t.indexOf('=');
+        if (eq < 0) return null;
+        if (!t.substring(0, eq).trim().equalsIgnoreCase(key)) return null;
+        String v = t.substring(eq + 1).trim();
+        if ((v.startsWith("\"") && v.endsWith("\"") && v.length() >= 2)
+                || (v.startsWith("'") && v.endsWith("'") && v.length() >= 2)) {
+            v = v.substring(1, v.length() - 1);
+        }
+        return v;
+    }
+
+    private static List<String> jsonStringValues(String s) {
+        List<String> out = new ArrayList<>();
+        int i = 0;
+        while (i < s.length()) {
+            int q = s.indexOf('"', i);
+            if (q < 0) break;
+            int end = q + 1;
+            while (end < s.length()) {
+                char c = s.charAt(end);
+                if (c == '\\' && end + 1 < s.length()) { end += 2; continue; }
+                if (c == '"') break;
+                end++;
+            }
+            if (end >= s.length()) break;
+            out.add(s.substring(q + 1, end));
+            i = end + 1;
+        }
+        return out;
     }
 
     private void buildClassMapping(ClassPool pool, ObfuscatorContext ctx,

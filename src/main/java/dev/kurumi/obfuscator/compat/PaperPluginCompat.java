@@ -43,14 +43,23 @@ public class PaperPluginCompat implements CompatProvider {
 
     @Override
     public Set<String> exemptClassSuperTypes() {
+        // JavaPlugin subclasses are pinned by plugin.yml's `main:` (handled in the
+        // resource scanner). Listener / CommandExecutor / TabCompleter do NOT need
+        // class-level exemption — Bukkit finds them at runtime via the plugin
+        // instance (registerEvents / getCommand().setExecutor()); only the
+        // @EventHandler-annotated methods and the well-known method signatures
+        // (onCommand, onTabComplete…) must keep their names, which are already
+        // covered by exemptAnnotations() and exemptMethodSignatures().
+        //
+        // ConfigurationSerializable is genuinely reflection-pinned (Bukkit loads
+        // it by class name via deserialize()). InventoryHolder is a marker
+        // interface and safe to rename, but kept here as a conservative default.
         return Set.of(
+                // Pinned as the plugin entry point (redundantly — the resource
+                // scanner also reads plugin.yml's `main:` — but kept as a
+                // defence-in-depth against plugin.yml-less inputs).
                 "org/bukkit/plugin/java/JavaPlugin",
-                "org/bukkit/event/Listener",
-                "org/bukkit/command/CommandExecutor",
-                "org/bukkit/command/TabCompleter",
-                "org/bukkit/command/TabExecutor",
-                "org/bukkit/configuration/serialization/ConfigurationSerializable",
-                "org/bukkit/inventory/InventoryHolder"
+                "org/bukkit/configuration/serialization/ConfigurationSerializable"
         );
     }
 }

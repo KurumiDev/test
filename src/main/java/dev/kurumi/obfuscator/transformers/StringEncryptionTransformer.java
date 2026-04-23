@@ -73,11 +73,15 @@ public class StringEncryptionTransformer implements Transformer {
                 for (AbstractInsnNode insn : ldcNodes) {
                     LdcInsnNode ldc = (LdcInsnNode) insn;
                     String original = (String) ldc.cst;
-                    String encoded = encode(original, classKey + methodKey);
+                    int perCallSalt = strength == ObfuscatorConfig.StringStrength.HEAVY
+                            ? java.util.concurrent.ThreadLocalRandom.current().nextInt() : 0;
+                    String encoded = encode(original, classKey + methodKey + perCallSalt);
                     ldc.cst = encoded;
                     InsnList replacement = new InsnList();
                     if (strength == ObfuscatorConfig.StringStrength.HEAVY) {
-                        replacement.add(pushInt(methodKey));
+                        // pass (methodKey + perCallSalt) so identical strings in the same
+                        // method still encode to distinct ciphertexts
+                        replacement.add(pushInt(methodKey + perCallSalt));
                         replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name,
                                 DECRYPT_NAME_HEAVY, DECRYPT_DESC_HEAVY, (cn.access & Opcodes.ACC_INTERFACE) != 0));
                     } else {
