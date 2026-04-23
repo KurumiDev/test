@@ -31,10 +31,30 @@ public class StringEncryptionTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(StringEncryptionTransformer.class);
 
-    private static final String DECRYPT_NAME_STANDARD = "$obfD";
-    private static final String DECRYPT_NAME_HEAVY = "$obfDH";
+    private static final String DECRYPT_PREFIX = "$obf";
     private static final String DECRYPT_DESC_STANDARD = "(Ljava/lang/String;)Ljava/lang/String;";
     private static final String DECRYPT_DESC_HEAVY = "(Ljava/lang/String;I)Ljava/lang/String;";
+
+    /**
+     * Deterministic per-class 8-character alphanumeric suffix. Identical for
+     * the same class on every obfuscator run, different for every class in
+     * the same JAR. Prevents a reverse engineer from grepping for a known
+     * symbol like {@code $obfD} to find every decryptor.
+     */
+    private static String decryptName(String internalName, ObfuscatorConfig.StringStrength strength) {
+        long h = 0xCBF29CE484222325L ^ (strength == ObfuscatorConfig.StringStrength.HEAVY ? 0xAL : 0x5L);
+        for (int i = 0; i < internalName.length(); i++) {
+            h ^= internalName.charAt(i);
+            h *= 0x100000001B3L;
+        }
+        char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
+        StringBuilder sb = new StringBuilder(DECRYPT_PREFIX);
+        for (int i = 0; i < 8; i++) {
+            sb.append(alphabet[(int) ((h >>> (i * 8)) & 0x3F) % alphabet.length]);
+            h = (h ^ (h >>> 7)) * 0xBF58476D1CE4E5B9L;
+        }
+        return sb.toString();
+    }
 
     @Override
     public String name() {
@@ -51,11 +71,12 @@ public class StringEncryptionTransformer implements Transformer {
             if (cn.name.endsWith("/package-info")) continue;
 
             int classKey = deriveClassKey(cn.name);
+            String decryptName = decryptName(cn.name, strength);
             boolean classTouched = false;
 
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null || mn.instructions.size() == 0) continue;
-                if (mn.name.equals(DECRYPT_NAME_STANDARD) || mn.name.equals(DECRYPT_NAME_HEAVY)) continue;
+                if (mn.name.equals(decryptName)) continue;
 
                 InsnList insns = mn.instructions;
                 List<AbstractInsnNode> ldcNodes = new java.util.ArrayList<>();
@@ -78,16 +99,14 @@ public class StringEncryptionTransformer implements Transformer {
                     String encoded = encode(original, classKey + methodKey + perCallSalt);
                     ldc.cst = encoded;
                     InsnList replacement = new InsnList();
+                    String desc = strength == ObfuscatorConfig.StringStrength.HEAVY ? DECRYPT_DESC_HEAVY : DECRYPT_DESC_STANDARD;
                     if (strength == ObfuscatorConfig.StringStrength.HEAVY) {
                         // pass (methodKey + perCallSalt) so identical strings in the same
                         // method still encode to distinct ciphertexts
                         replacement.add(pushInt(methodKey + perCallSalt));
-                        replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name,
-                                DECRYPT_NAME_HEAVY, DECRYPT_DESC_HEAVY, (cn.access & Opcodes.ACC_INTERFACE) != 0));
-                    } else {
-                        replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name,
-                                DECRYPT_NAME_STANDARD, DECRYPT_DESC_STANDARD, (cn.access & Opcodes.ACC_INTERFACE) != 0));
                     }
+                    replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name,
+                            decryptName, desc, (cn.access & Opcodes.ACC_INTERFACE) != 0));
                     insns.insert(ldc, replacement);
                     classTouched = true;
                     stringsEncrypted++;
@@ -95,7 +114,7 @@ public class StringEncryptionTransformer implements Transformer {
             }
 
             if (classTouched) {
-                injectDecryptMethod(cn, classKey, strength);
+                injectDecryptMethod(cn, classKey, strength, decryptName);
                 classesTouched++;
             }
         }
@@ -137,10 +156,9 @@ public class StringEncryptionTransformer implements Transformer {
         return new LdcInsnNode(value);
     }
 
-    private void injectDecryptMethod(ClassNode cn, int classKey, ObfuscatorConfig.StringStrength strength) {
+    private void injectDecryptMethod(ClassNode cn, int classKey, ObfuscatorConfig.StringStrength strength, String name) {
         boolean iface = (cn.access & Opcodes.ACC_INTERFACE) != 0;
         int access = Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC;
-        String name = strength == ObfuscatorConfig.StringStrength.HEAVY ? DECRYPT_NAME_HEAVY : DECRYPT_NAME_STANDARD;
         String desc = strength == ObfuscatorConfig.StringStrength.HEAVY ? DECRYPT_DESC_HEAVY : DECRYPT_DESC_STANDARD;
         for (MethodNode existing : cn.methods) {
             if (existing.name.equals(name) && existing.desc.equals(desc)) return;

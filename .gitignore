@@ -6,3 +6,4 @@ target/
 *.jar
 !src/test/resources/**/*.jar
 hs_err_pid*.log
+out/

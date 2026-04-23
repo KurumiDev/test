@@ -49,10 +49,16 @@ public class BlobStringTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(BlobStringTransformer.class);
 
-    private static final String BLOB_FIELD = "$obfBSb";       // byte[] raw blob
-    private static final String OFFSETS_FIELD = "$obfBSo";    // int[] offsets
-    private static final String CACHE_FIELD = "$obfBSc";      // String[] lazy cache
-    private static final String DECODER = "$obfBS";           // static String (int)
+    // Per-class randomized decoder/field names. A reverse engineer can no
+    // longer grep for a fixed symbol like `$obfBS` to find every decoder in
+    // the JAR — each class gets its own 8-char suffix derived
+    // deterministically from the class name.
+    //
+    // Layout: ${PREFIX}${suffix}b  — byte[] blob
+    //         ${PREFIX}${suffix}o  — int[] offsets
+    //         ${PREFIX}${suffix}c  — String[] lazy cache
+    //         ${PREFIX}${suffix}   — static String decoder(int)
+    private static final String PREFIX = "$obf";
 
     @Override
     public String name() {
@@ -82,11 +88,17 @@ public class BlobStringTransformer implements Transformer {
     }
 
     private int rewriteOne(ClassNode cn) {
+        String suffix = randomSuffix(cn.name);
+        String blobField = PREFIX + suffix + "b";
+        String offsetsField = PREFIX + suffix + "o";
+        String cacheField = PREFIX + suffix + "c";
+        String decoder = PREFIX + suffix;
+
         // Phase 1: collect all distinct LDC string constants.
         LinkedHashMap<String, Integer> indexByString = new LinkedHashMap<>();
         for (MethodNode mn : cn.methods) {
             if (mn.instructions == null) continue;
-            if (DECODER.equals(mn.name)) continue;
+            if (decoder.equals(mn.name)) continue;
             for (AbstractInsnNode insn : mn.instructions.toArray()) {
                 if (insn instanceof LdcInsnNode ldc && ldc.cst instanceof String s) {
                     indexByString.computeIfAbsent(s, k -> indexByString.size());
@@ -124,36 +136,36 @@ public class BlobStringTransformer implements Transformer {
         String encB64 = Base64.getEncoder().encodeToString(enc);
 
         // Phase 3: inject fields.
-        if (!hasField(cn, BLOB_FIELD)) {
+        if (!hasField(cn, blobField)) {
             cn.fields.add(new FieldNode(
                     Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC,
-                    BLOB_FIELD, "[B", null, null));
+                    blobField, "[B", null, null));
         }
-        if (!hasField(cn, OFFSETS_FIELD)) {
+        if (!hasField(cn, offsetsField)) {
             cn.fields.add(new FieldNode(
                     Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC,
-                    OFFSETS_FIELD, "[I", null, null));
+                    offsetsField, "[I", null, null));
         }
-        if (!hasField(cn, CACHE_FIELD)) {
+        if (!hasField(cn, cacheField)) {
             cn.fields.add(new FieldNode(
                     Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
-                    CACHE_FIELD, "[Ljava/lang/String;", null, null));
+                    cacheField, "[Ljava/lang/String;", null, null));
         }
 
         // Phase 4: inject <clinit> prefix to initialize blob + offsets.
-        injectClinitPrefix(cn, encB64, offsets, seed);
+        injectClinitPrefix(cn, encB64, offsets, seed, blobField, offsetsField, cacheField);
 
         // Phase 5: inject decoder method.
-        if (!hasMethod(cn, DECODER, "(I)Ljava/lang/String;")) {
-            cn.methods.add(buildDecoder(cn));
+        if (!hasMethod(cn, decoder, "(I)Ljava/lang/String;")) {
+            cn.methods.add(buildDecoder(cn, decoder, blobField, offsetsField, cacheField));
         }
 
-        // Phase 6: rewrite each LDC to INVOKESTATIC cn.DECODER(I)String.
+        // Phase 6: rewrite each LDC to INVOKESTATIC cn.decoder(I)String.
         Map<String, Integer> fixedIndex = new HashMap<>(indexByString);
         int replaced = 0;
         for (MethodNode mn : cn.methods) {
             if (mn.instructions == null) continue;
-            if (DECODER.equals(mn.name)) continue;
+            if (decoder.equals(mn.name)) continue;
             if ("<clinit>".equals(mn.name)) continue;
             for (AbstractInsnNode insn : mn.instructions.toArray()) {
                 if (!(insn instanceof LdcInsnNode ldc)) continue;
@@ -162,7 +174,7 @@ public class BlobStringTransformer implements Transformer {
                 if (idx == null) continue;
                 InsnList repl = new InsnList();
                 repl.add(loadInt(idx));
-                repl.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, DECODER,
+                repl.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, decoder,
                         "(I)Ljava/lang/String;", false));
                 mn.instructions.insert(insn, repl);
                 mn.instructions.remove(insn);
@@ -170,6 +182,28 @@ public class BlobStringTransformer implements Transformer {
             }
         }
         return replaced;
+    }
+
+    /**
+     * Derives a stable 8-character alphanumeric suffix from the class name.
+     * Two classes in the same JAR get different suffixes (as long as their
+     * internal names differ), but the same class always gets the same
+     * suffix, which is important for deterministic diffs and reproducible
+     * builds.
+     */
+    private static String randomSuffix(String className) {
+        long h = 0xCBF29CE484222325L;
+        for (int i = 0; i < className.length(); i++) {
+            h ^= className.charAt(i);
+            h *= 0x100000001B3L;
+        }
+        char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
+        char[] out = new char[8];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = alphabet[(int) ((h >>> (i * 8)) & 0x3F) % alphabet.length];
+            h = (h ^ (h >>> 7)) * 0xBF58476D1CE4E5B9L;
+        }
+        return new String(out);
     }
 
     private static int seedFor(String className) {
@@ -219,7 +253,8 @@ public class BlobStringTransformer implements Transformer {
      * writes the offsets table into {@link #OFFSETS_FIELD}. Creates
      * {@code <clinit>} if the class doesn't already have one.
      */
-    private void injectClinitPrefix(ClassNode cn, String encB64, int[] offsets, int seed) {
+    private void injectClinitPrefix(ClassNode cn, String encB64, int[] offsets, int seed,
+                                    String blobField, String offsetsField, String cacheField) {
         MethodNode clinit = null;
         for (MethodNode m : cn.methods) {
             if ("<clinit>".equals(m.name) && "()V".equals(m.desc)) {
@@ -307,11 +342,11 @@ public class BlobStringTransformer implements Transformer {
         prefix.add(new JumpInsnNode(Opcodes.GOTO, loop));
         prefix.add(loopEnd);
 
-        // BLOB_FIELD = out
+        // blobField = out
         prefix.add(new VarInsnNode(Opcodes.ALOAD, Lout));
-        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, BLOB_FIELD, "[B"));
+        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, blobField, "[B"));
 
-        // OFFSETS_FIELD = new int[]{offsets...}
+        // offsetsField = new int[]{offsets...}
         prefix.add(loadInt(offsets.length));
         prefix.add(new IntInsnNode(Opcodes.NEWARRAY, Opcodes.T_INT));
         for (int k = 0; k < offsets.length; k++) {
@@ -320,12 +355,12 @@ public class BlobStringTransformer implements Transformer {
             prefix.add(loadInt(offsets[k]));
             prefix.add(new InsnNode(Opcodes.IASTORE));
         }
-        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, OFFSETS_FIELD, "[I"));
+        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, offsetsField, "[I"));
 
-        // CACHE_FIELD = new String[count]
+        // cacheField = new String[count]
         prefix.add(loadInt(offsets.length - 1));
         prefix.add(new TypeInsnNode(Opcodes.ANEWARRAY, "java/lang/String"));
-        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, CACHE_FIELD,
+        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, cacheField,
                 "[Ljava/lang/String;"));
 
         clinit.instructions.insert(prefix);
@@ -354,16 +389,17 @@ public class BlobStringTransformer implements Transformer {
      * }
      * </pre>
      */
-    private MethodNode buildDecoder(ClassNode cn) {
+    private MethodNode buildDecoder(ClassNode cn, String decoder, String blobField,
+                                    String offsetsField, String cacheField) {
         MethodNode m = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
-                DECODER, "(I)Ljava/lang/String;", null, null);
+                decoder, "(I)Ljava/lang/String;", null, null);
 
         // Locals: 0=idx, 1=cache, 2=cached, 3=start, 4=end, 5=slice
         InsnList il = m.instructions;
 
-        // cache = $obfBSc
-        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, CACHE_FIELD,
+        // cache = cacheField
+        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, cacheField,
                 "[Ljava/lang/String;"));
         il.add(new VarInsnNode(Opcodes.ASTORE, 1));
 
@@ -382,14 +418,14 @@ public class BlobStringTransformer implements Transformer {
 
         il.add(notCached);
 
-        // start = $obfBSo[idx]
-        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, OFFSETS_FIELD, "[I"));
+        // start = offsetsField[idx]
+        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, offsetsField, "[I"));
         il.add(new VarInsnNode(Opcodes.ILOAD, 0));
         il.add(new InsnNode(Opcodes.IALOAD));
         il.add(new VarInsnNode(Opcodes.ISTORE, 3));
 
-        // end = $obfBSo[idx + 1]
-        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, OFFSETS_FIELD, "[I"));
+        // end = offsetsField[idx + 1]
+        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, offsetsField, "[I"));
         il.add(new VarInsnNode(Opcodes.ILOAD, 0));
         il.add(new InsnNode(Opcodes.ICONST_1));
         il.add(new InsnNode(Opcodes.IADD));
@@ -403,8 +439,8 @@ public class BlobStringTransformer implements Transformer {
         il.add(new IntInsnNode(Opcodes.NEWARRAY, Opcodes.T_BYTE));
         il.add(new VarInsnNode(Opcodes.ASTORE, 5));
 
-        // System.arraycopy($obfBSb, start, slice, 0, end - start)
-        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, BLOB_FIELD, "[B"));
+        // System.arraycopy(blobField, start, slice, 0, end - start)
+        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, blobField, "[B"));
         il.add(new VarInsnNode(Opcodes.ILOAD, 3));
         il.add(new VarInsnNode(Opcodes.ALOAD, 5));
         il.add(new InsnNode(Opcodes.ICONST_0));
