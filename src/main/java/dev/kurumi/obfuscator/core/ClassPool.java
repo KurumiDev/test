@@ -109,6 +109,14 @@ public class ClassPool {
         classNodes.putAll(replacements);
     }
 
+    /**
+     * Add a new synthetic class to the owned pool. Used by class-splitting /
+     * class-exploding transformers that generate helper classes at runtime.
+     */
+    public void addClass(ClassNode cn) {
+        classNodes.put(cn.name, cn);
+    }
+
     public int size() {
         return classNodes.size();
     }

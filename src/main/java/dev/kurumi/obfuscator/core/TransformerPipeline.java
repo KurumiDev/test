@@ -7,6 +7,7 @@ import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.transformers.AccessFlagObfuscator;
 import dev.kurumi.obfuscator.transformers.BlobStringTransformer;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
+import dev.kurumi.obfuscator.transformers.ClassExploderTransformer;
 import dev.kurumi.obfuscator.transformers.ClassLiteralTransformer;
 import dev.kurumi.obfuscator.transformers.FlowObfuscationTransformer;
 import dev.kurumi.obfuscator.transformers.IndyCallTransformer;
@@ -50,6 +51,13 @@ public class TransformerPipeline {
 
         // 2. Renamer: changes every reference everywhere
         transformers.add(new RenamerTransformer());
+
+        // 2b. Class-exploder: per-class synthetic helper classes that
+        //      inflate the total class count. Runs right after renamer
+        //      so the emitted workers inherit every subsequent pass
+        //      (string-encryption, flow-obfuscation, opaque-predicates,
+        //      indy-call, blob-string ...).
+        transformers.add(new ClassExploderTransformer());
 
         // 3. Number obfuscation BEFORE flow, so jump targets stay stable
         transformers.add(new NumberObfuscationTransformer());

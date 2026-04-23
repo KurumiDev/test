@@ -64,6 +64,7 @@ public class ObfuscatorConfig {
     private final boolean sourceScrubEnabled;
     private final boolean blobStringEnabled;
     private final boolean localVarTableEnabled;
+    private final boolean classExplodeEnabled;
 
     private final boolean localVarEnabled;
 
@@ -107,6 +108,7 @@ public class ObfuscatorConfig {
         this.sourceScrubEnabled = b.sourceScrubEnabled;
         this.blobStringEnabled = b.blobStringEnabled;
         this.localVarTableEnabled = b.localVarTableEnabled;
+        this.classExplodeEnabled = b.classExplodeEnabled;
         this.localVarEnabled = b.localVarEnabled;
         this.exemptions = List.copyOf(b.exemptions);
         this.autoExempt = b.autoExempt;
@@ -166,6 +168,7 @@ public class ObfuscatorConfig {
         if (c.hasPath("transformers.source-scrub.enabled")) b.sourceScrubEnabled = c.getBoolean("transformers.source-scrub.enabled");
         if (c.hasPath("transformers.blob-string.enabled")) b.blobStringEnabled = c.getBoolean("transformers.blob-string.enabled");
         if (c.hasPath("transformers.local-variable-table.enabled")) b.localVarTableEnabled = c.getBoolean("transformers.local-variable-table.enabled");
+        if (c.hasPath("transformers.class-explode.enabled")) b.classExplodeEnabled = c.getBoolean("transformers.class-explode.enabled");
 
         if (c.hasPath("transformers.local-variable.enabled")) b.localVarEnabled = c.getBoolean("transformers.local-variable.enabled");
 
@@ -234,6 +237,7 @@ public class ObfuscatorConfig {
             case "blob-string" -> blobStringEnabled;
             case "local-variable-table" -> localVarTableEnabled;
             case "local-variable" -> localVarEnabled;
+            case "class-explode" -> classExplodeEnabled;
             default -> true;
         };
     }
@@ -278,6 +282,7 @@ public class ObfuscatorConfig {
         public boolean sourceScrubEnabled = true;
         public boolean blobStringEnabled = false; // opt-in: replaces string-encryption
         public boolean localVarTableEnabled = true;
+        public boolean classExplodeEnabled = false; // opt-in: inflates class count
 
         public boolean localVarEnabled = true;
 

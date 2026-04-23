@@ -143,6 +143,7 @@ public class Main implements Callable<Integer> {
         b.blobStringEnabled = loaded.isTransformerEnabled("blob-string");
         b.localVarTableEnabled = loaded.isTransformerEnabled("local-variable-table");
         b.localVarEnabled = loaded.isTransformerEnabled("local-variable");
+        b.classExplodeEnabled = loaded.isTransformerEnabled("class-explode");
         return b;
     }
 
