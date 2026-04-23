@@ -1,6 +1,6 @@
-package analysis;
+package obfuscator.analysis;
 
-import core.ClassPool;
+import obfuscator.core.ClassPool;
 import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.MethodNode;

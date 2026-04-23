@@ -1,4 +1,4 @@
-package analysis;
+package obfuscator.analysis;
 
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.MethodNode;

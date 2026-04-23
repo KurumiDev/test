@@ -1,6 +1,6 @@
-package transformers.phase2;
+package obfuscator.transformers.phase2;
 
-import core.ClassPool;
+import obfuscator.core.ClassPool;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.*;
 import org.slf4j.Logger;

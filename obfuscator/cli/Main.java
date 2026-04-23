@@ -1,7 +1,7 @@
 package cli;
 
-import core.Obfuscator;
-import core.MappingTable;
+import obfuscator.core.Obfuscator;
+import obfuscator.core.MappingTable;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 

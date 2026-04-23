@@ -1,9 +1,37 @@
 ```
-# Build artifacts
-target/
-**/target/
+# Compiled and build artifacts
+*.class
+*.o
+*.obj
+*.out
+build/
+dist/
 
 # Dependencies
-.mvn/
-mvn/
+lib/
+libs/
+target/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Gradle (if present in Java project)
+.gradle/
 ```

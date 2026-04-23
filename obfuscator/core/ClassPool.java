@@ -1,11 +1,10 @@
-package core;
+package obfuscator.core;
 
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.ClassNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +20,8 @@ import java.util.jar.JarOutputStream;
  */
 public class ClassPool {
     private static final Logger LOG = LoggerFactory.getLogger(ClassPool.class);
+    
+    private final MappingTable mappingTable = new MappingTable();
 
     // Classes that will be obfuscated
     private final Map<String, ClassNode> ownClasses = new LinkedHashMap<>();
@@ -117,49 +118,19 @@ public class ClassPool {
         return all;
     }
 
-    public byte[] writeClass(ClassNode cn) {
-        org.objectweb.asm.ClassWriter cw = new org.objectweb.asm.ClassWriter(
-            org.objectweb.asm.ClassWriter.COMPUTE_FRAMES);
-        cn.accept(cw);
-        return cw.toByteArray();
+    public MappingTable getMappingTable() {
+        return mappingTable;
     }
 
-    public void writeJar(Path output) throws IOException {
-        LOG.info("Writing output JAR: {}", output);
-        Files.createDirectories(output.getParent());
-        
-        try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(output))) {
-            // Write obfuscated own classes
-            for (Map.Entry<String, ClassNode> entry : ownClasses.entrySet()) {
-                ClassNode cn = entry.getValue();
-                byte[] bytes = writeClass(cn);
-                JarEntry je = new JarEntry(cn.name + ".class");
-                je.setTime(System.currentTimeMillis());
-                jos.putNextEntry(je);
-                jos.write(bytes);
-                jos.closeEntry();
-            }
+    public void addClassMapping(String oldName, String newName) {
+        mappingTable.addClassMapping(oldName, newName);
+    }
 
-            // Write runtime injected classes
-            for (Map.Entry<String, ClassNode> entry : runtimeInjected.entrySet()) {
-                ClassNode cn = entry.getValue();
-                byte[] bytes = writeClass(cn);
-                JarEntry je = new JarEntry(cn.name + ".class");
-                je.setTime(System.currentTimeMillis());
-                jos.putNextEntry(je);
-                jos.write(bytes);
-                jos.closeEntry();
-            }
+    public void addMethodMapping(String className, String oldName, String desc, String newName) {
+        mappingTable.addMethodMapping(className, oldName, desc, newName);
+    }
 
-            // Write resources
-            for (Map.Entry<String, byte[]> entry : resources.entrySet()) {
-                JarEntry je = new JarEntry(entry.getKey());
-                je.setTime(System.currentTimeMillis());
-                jos.putNextEntry(je);
-                jos.write(entry.getValue());
-                jos.closeEntry();
-            }
-        }
-        LOG.info("Output JAR written successfully");
+    public void addFieldMapping(String className, String oldName, String newName) {
+        mappingTable.addFieldMapping(className, oldName, newName);
     }
 }

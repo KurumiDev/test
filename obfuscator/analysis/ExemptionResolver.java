@@ -1,6 +1,6 @@
-package analysis;
+package obfuscator.analysis;
 
-import core.ClassPool;
+import obfuscator.core.ClassPool;
 import org.objectweb.asm.tree.ClassNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

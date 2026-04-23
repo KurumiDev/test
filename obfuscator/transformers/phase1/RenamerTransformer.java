@@ -1,8 +1,8 @@
-package transformers.phase1;
+package obfuscator.transformers.phase1;
 
-import core.ClassPool;
-import core.MappingTable;
-import analysis.ExemptionResolver;
+import obfuscator.core.ClassPool;
+import obfuscator.core.MappingTable;
+import obfuscator.analysis.ExemptionResolver;
 import org.objectweb.asm.commons.Remapper;
 import org.objectweb.asm.tree.ClassNode;
 import org.slf4j.Logger;

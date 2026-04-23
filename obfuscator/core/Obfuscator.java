@@ -1,17 +1,21 @@
-package core;
+package obfuscator.core;
 
-import analysis.*;
-import compat.*;
+import obfuscator.analysis.*;
+import obfuscator.compat.*;
+import obfuscator.transformers.phase1.LocalVariableTransformer;
+import obfuscator.transformers.phase1.RenamerTransformer;
+import obfuscator.transformers.phase2.NumberObfuscationTransformer;
+import obfuscator.transformers.phase2.StringEncryptionTransformer;
+import obfuscator.transformers.phase3.FlowObfuscationTransformer;
+import obfuscator.transformers.phase3.OpaquePredicateTransformer;
+import obfuscator.transformers.phase3.InvokeDynamicTransformer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import transformers.phase1.LocalVariableTransformer;
-import transformers.phase1.RenamerTransformer;
-import transformers.phase2.NumberObfuscationTransformer;
-import transformers.phase2.StringEncryptionTransformer;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Main obfuscator orchestrator.
@@ -20,7 +24,6 @@ public class Obfuscator {
     private static final Logger LOG = LoggerFactory.getLogger(Obfuscator.class);
 
     private final ClassPool pool;
-    private final MappingTable mappingTable;
     private final InheritanceGraph inheritanceGraph;
     private final AnnotationScanner annotationScanner;
     private final ExemptionResolver exemptionResolver;
@@ -34,10 +37,15 @@ public class Obfuscator {
     private final boolean renameFields;
     private final boolean enableStringEncryption;
     private final boolean enableNumberObfuscation;
+    private final boolean enableFlowObfuscation;
+    private final boolean enableOpaquePredicates;
+    private final boolean enableInvokeDynamic;
+    private final FlowObfuscationTransformer.Technique flowTechnique;
+    private final Set<OpaquePredicateTransformer.Category> predicateCategories;
+    private final double predicateDensity;
 
     public Obfuscator(Config config) {
         this.pool = new ClassPool();
-        this.mappingTable = new MappingTable();
         this.inheritanceGraph = new InheritanceGraph();
         this.annotationScanner = new AnnotationScanner();
         this.exemptionResolver = new ExemptionResolver(annotationScanner, inheritanceGraph);
@@ -49,6 +57,12 @@ public class Obfuscator {
         this.renameFields = config.renameFields;
         this.enableStringEncryption = config.enableStringEncryption;
         this.enableNumberObfuscation = config.enableNumberObfuscation;
+        this.enableFlowObfuscation = config.enableFlowObfuscation;
+        this.enableOpaquePredicates = config.enableOpaquePredicates;
+        this.enableInvokeDynamic = config.enableInvokeDynamic;
+        this.flowTechnique = config.flowTechnique;
+        this.predicateCategories = config.predicateCategories;
+        this.predicateDensity = config.predicateDensity;
     }
 
     public void loadInput(Path inputJar) throws IOException {
@@ -103,7 +117,7 @@ public class Obfuscator {
         annotationScanner.scan(pool);
         
         // Resolve exemptions
-        exemptionResolver.resolve(pool);
+        exemptionResolver.resolve(pool, compatProfile);
         
         // Detect lambdas
         var classesWithLambdas = LambdaDetector.scanClasses(pool.getOwnClasses());
@@ -118,7 +132,7 @@ public class Obfuscator {
         LOG.info("--- Phase 1: Safe transformations ---");
         
         RenamerTransformer renamer = new RenamerTransformer(
-            pool, mappingTable, exemptionResolver,
+            pool, pool.getMappingTable(), exemptionResolver,
             namingStrategy, renameClasses, renameMethods, renameFields, true
         );
         renamer.transform();
@@ -143,14 +157,35 @@ public class Obfuscator {
             stringEnc.transform();
         }
         
-        // Phase 3: Aggressive transformations (not yet implemented)
-        LOG.info("--- Phase 3: Aggressive transformations (skipped - not implemented) ---");
+        // Phase 3: Aggressive transformations
+        LOG.info("--- Phase 3: Aggressive transformations ---");
+        
+        if (enableFlowObfuscation) {
+            FlowObfuscationTransformer flowObf = new FlowObfuscationTransformer(
+                pool, flowTechnique, FlowObfuscationTransformer.Complexity.MEDIUM, true
+            );
+            flowObf.transform();
+        }
+        
+        if (enableOpaquePredicates) {
+            OpaquePredicateTransformer opaqueObf = new OpaquePredicateTransformer(
+                pool, predicateCategories, predicateDensity
+            );
+            opaqueObf.transform();
+        }
+        
+        if (enableInvokeDynamic) {
+            InvokeDynamicTransformer invokeDyn = new InvokeDynamicTransformer(
+                pool, true
+            );
+            invokeDyn.transform();
+        }
         
         LOG.info("Transformation complete");
     }
 
     public void verify() {
-        LOG.info("=== PHASE 3: VERIFICATION ===");
+        LOG.info("=== PHASE 4: VERIFICATION ===");
         
         int errors = 0;
         for (ClassNode cn : pool.getOwnClasses()) {
@@ -187,18 +222,18 @@ public class Obfuscator {
     }
 
     public void writeOutput(Path outputJar) throws IOException {
-        LOG.info("=== PHASE 4: WRITE OUTPUT ===");
-        pool.writeJar(outputJar);
+        LOG.info("=== PHASE 5: WRITE OUTPUT ===");
+        JarWriter.write(outputJar, pool, true);
     }
 
     public void saveMapping(Path mappingPath) throws IOException {
         if (mappingPath != null) {
-            mappingTable.save(mappingPath);
+            pool.getMappingTable().save(mappingPath);
         }
     }
 
     public MappingTable getMappingTable() {
-        return mappingTable;
+        return pool.getMappingTable();
     }
 
     public static class Config {
@@ -209,5 +244,15 @@ public class Obfuscator {
         public boolean renameFields = true;
         public boolean enableStringEncryption = true;
         public boolean enableNumberObfuscation = true;
+        public boolean enableFlowObfuscation = true;
+        public boolean enableOpaquePredicates = true;
+        public boolean enableInvokeDynamic = true;
+        public FlowObfuscationTransformer.Technique flowTechnique = FlowObfuscationTransformer.Technique.ALL;
+        public Set<OpaquePredicateTransformer.Category> predicateCategories = Set.of(
+            OpaquePredicateTransformer.Category.ALIASING,
+            OpaquePredicateTransformer.Category.RUNTIME_STATE,
+            OpaquePredicateTransformer.Category.CROSS_METHOD
+        );
+        public double predicateDensity = 0.3;
     }
 }
