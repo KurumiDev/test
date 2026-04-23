@@ -15,4 +15,11 @@ public interface AnalysisPhase {
      * Получить имя фазы анализа
      */
     String getName();
+
+    /**
+     * Вывести сводку анализа
+     */
+    default void printSummary() {
+        System.out.println("    (No summary available)");
+    }
 }

@@ -285,7 +285,6 @@ public class RenamerTransformer implements Transformer {
                                    Map<String, Map<String, String>> fieldMapping) {
             this.classMapping = classMapping;
             this.methodMapping = methodMapping;
-            this.methodMapping = methodMapping;
             this.fieldMapping = fieldMapping;
         }
 
@@ -343,6 +342,24 @@ public class RenamerTransformer implements Transformer {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * Вывести mapping в консоль
+     */
+    public void printMapping() {
+        System.out.println("\n=== CLASS MAPPING ===");
+        for (Map.Entry<String, String> entry : classMapping.entrySet()) {
+            System.out.println(entry.getValue() + " → " + entry.getKey());
+        }
+        
+        System.out.println("\n=== METHOD MAPPING ===");
+        for (Map.Entry<String, Map<String, String>> classEntry : methodMapping.entrySet()) {
+            System.out.println("\nClass: " + classEntry.getKey());
+            for (Map.Entry<String, String> methodEntry : classEntry.getValue().entrySet()) {
+                System.out.println("    " + methodEntry.getValue() + " → " + methodEntry.getKey());
             }
         }
     }

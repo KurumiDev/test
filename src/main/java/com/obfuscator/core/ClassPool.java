@@ -149,4 +149,67 @@ public class ClassPool {
     public int getResourceCount() {
         return resources.size();
     }
+
+    /**
+     * Автодетекция типа проекта по импортам и ресурсам
+     */
+    public String detectPlatform() {
+        Set<String> allImports = new HashSet<>();
+        
+        // Собираем все импорты из классов
+        for (ClassNode cn : classNodes.values()) {
+            if (cn.visibleAnnotations != null) {
+                for (var ann : cn.visibleAnnotations) {
+                    allImports.add(ann.desc);
+                }
+            }
+            if (cn.invisibleAnnotations != null) {
+                for (var ann : cn.invisibleAnnotations) {
+                    allImports.add(ann.desc);
+                }
+            }
+            
+            // Проверяем суперкласс и интерфейсы
+            if (cn.superName != null) {
+                allImports.add(cn.superName);
+            }
+            if (cn.interfaces != null) {
+                allImports.addAll(cn.interfaces);
+            }
+        }
+
+        // Проверяем наличие plugin.yml
+        boolean hasPluginYml = resources.containsKey("plugin.yml");
+        boolean hasFabricModJson = resources.containsKey("fabric.mod.json");
+        boolean hasModsToml = resources.containsKey("META-INF/mods.toml");
+        boolean hasBungeeYml = resources.containsKey("bungee.yml");
+        boolean hasVelocityJson = resources.containsKey("velocity-plugin.json");
+
+        // Детекция по аннотациям и импортам
+        boolean hasBukkit = allImports.stream().anyMatch(s -> s.contains("org/bukkit"));
+        boolean hasPaper = allImports.stream().anyMatch(s -> s.contains("io/papermc") || s.contains("com/destroystokyo/paper"));
+        boolean hasFabric = allImports.stream().anyMatch(s -> s.contains("net/fabricmc"));
+        boolean hasForge = allImports.stream().anyMatch(s -> s.contains("net/minecraftforge") || s.contains("forge"));
+        boolean hasMixin = allImports.stream().anyMatch(s -> s.contains("org/spongepowered/api/util/annotation/mixin"));
+        boolean hasVelocity = allImports.stream().anyMatch(s -> s.contains("com/velocitypowered/api"));
+
+        // Приоритет: конкретные файлы > аннотации > импорты
+        if (hasFabricModJson || hasFabric || hasMixin) {
+            return "fabric";
+        }
+        if (hasModsToml || hasForge) {
+            return "forge";
+        }
+        if (hasVelocityJson || hasVelocity) {
+            return "velocity";
+        }
+        if (hasBungeeYml || (hasBukkit && allImports.stream().anyMatch(s -> s.contains("net/md_5/bungee")))) {
+            return "bungee";
+        }
+        if (hasPluginYml || hasBukkit || hasPaper) {
+            return "paper";
+        }
+
+        return "plain";
+    }
 }

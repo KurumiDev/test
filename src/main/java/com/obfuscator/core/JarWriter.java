@@ -62,6 +62,13 @@ public class JarWriter {
     }
 
     /**
+     * Алиас для writeJar (для совместимости)
+     */
+    public void write(Path outputPath) throws IOException {
+        writeJar(outputPath);
+    }
+
+    /**
      * Записать класс в байты с вычислением frames
      */
     public byte[] writeClass(ClassNode classNode) {

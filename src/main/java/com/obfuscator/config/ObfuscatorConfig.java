@@ -374,4 +374,34 @@ public class ObfuscatorConfig {
             this.exemptions = config.getStringList("exemptions");
         }
     }
+
+    /**
+     * Создать конфигурацию по умолчанию
+     */
+    public static ObfuscatorConfig defaultConfig() {
+        return new ObfuscatorConfig();
+    }
+
+    /**
+     * Установить target из строки (для CLI)
+     */
+    public void setTarget(String target) {
+        if (target != null) {
+            this.targetType = TargetType.valueOf(target.toUpperCase());
+        }
+    }
+
+    /**
+     * Получить target как строку
+     */
+    public String getTarget() {
+        return targetType.name().toLowerCase();
+    }
+
+    /**
+     * Получить список библиотек как строки путей
+     */
+    public List<String> getLibrariesAsString() {
+        return libraries.stream().map(Path::toString).toList();
+    }
 }
