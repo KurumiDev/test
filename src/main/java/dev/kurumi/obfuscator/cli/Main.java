@@ -1,0 +1,168 @@
+package dev.kurumi.obfuscator.cli;
+
+import dev.kurumi.obfuscator.config.ObfuscatorConfig;
+import dev.kurumi.obfuscator.core.Obfuscator;
+import dev.kurumi.obfuscator.retrace.RetraceTool;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+
+@Command(name = "obfuscator",
+        mixinStandardHelpOptions = true,
+        version = "0.1.0",
+        description = "Production-ready Java bytecode obfuscator",
+        subcommands = {Main.RetraceSubcommand.class})
+public class Main implements Callable<Integer> {
+
+    private static final Logger log = LoggerFactory.getLogger(Main.class);
+
+    @Option(names = {"-i", "--input"}, description = "Input JAR file")
+    Path input;
+
+    @Option(names = {"-o", "--output"}, description = "Output JAR file")
+    Path output;
+
+    @Option(names = {"-c", "--config"}, description = "HOCON config file")
+    Path configPath;
+
+    @Option(names = {"--library"}, description = "Additional library JAR(s) for inheritance analysis")
+    List<Path> libraries = new ArrayList<>();
+
+    @Option(names = {"--auto"}, description = "Auto-detect target (paper/fabric/forge/...)")
+    boolean auto;
+
+    @Option(names = {"-v", "--verbose"}, description = "Verbose logging")
+    boolean verbose;
+
+    @Option(names = {"--dry-run"}, description = "Analyze only, do not write output")
+    boolean dryRun;
+
+    @Option(names = {"--show-mapping"}, description = "Print mappings to stdout on completion")
+    boolean showMapping;
+
+    @Option(names = {"--save-mapping"}, description = "Write the rename mapping to this file")
+    Path saveMapping;
+
+    @Option(names = {"--strategy"}, description = "Naming strategy: ALPHABET|UNICODE|CONFUSE|RANDOM_HEX")
+    ObfuscatorConfig.NamingStrategy strategy;
+
+    @Option(names = {"--strength"}, description = "String encryption strength: LIGHT|STANDARD|HEAVY")
+    ObfuscatorConfig.StringStrength strength;
+
+    @Override
+    public Integer call() {
+        if (verbose) {
+            System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug");
+        }
+
+        ObfuscatorConfig.Builder b = configPath != null
+                ? fromConfigBuilder(configPath)
+                : new ObfuscatorConfig.Builder();
+
+        if (input != null) b.input = input;
+        if (output != null) b.output = output;
+        if (!libraries.isEmpty()) b.libraries.addAll(libraries);
+        if (auto) b.target = ObfuscatorConfig.Target.AUTO;
+        if (dryRun) b.dryRun = true;
+        if (saveMapping != null) b.saveMapping = saveMapping;
+        if (strategy != null) b.namingStrategy = strategy;
+        if (strength != null) b.stringStrength = strength;
+
+        if (b.input == null) {
+            log.error("--input or a config with 'input' is required");
+            return 2;
+        }
+        if (b.output == null && !b.dryRun) {
+            log.error("--output is required unless --dry-run");
+            return 2;
+        }
+
+        ObfuscatorConfig cfg = b.build();
+
+        try {
+            Obfuscator.ObfuscationResult res = new Obfuscator(cfg).run();
+            log.info("Done: {} classes processed", res.classCount());
+            if (showMapping) {
+                res.context().classMapping().forEach((k, v) -> System.out.println(k + " -> " + v));
+                res.context().methodMapping().forEach((k, v) -> System.out.println(k + " -> " + v));
+                res.context().fieldMapping().forEach((k, v) -> System.out.println(k + " -> " + v));
+            }
+            return 0;
+        } catch (Exception ex) {
+            log.error("Obfuscation failed", ex);
+            return 1;
+        }
+    }
+
+    private static ObfuscatorConfig.Builder fromConfigBuilder(Path path) {
+        ObfuscatorConfig loaded = ObfuscatorConfig.fromFile(path);
+        ObfuscatorConfig.Builder b = new ObfuscatorConfig.Builder();
+        b.input = loaded.input();
+        b.output = loaded.output();
+        b.libraries.addAll(loaded.libraries());
+        b.target = loaded.target();
+        b.namingStrategy = loaded.namingStrategy();
+        b.renameClasses = loaded.renameClasses();
+        b.renameMethods = loaded.renameMethods();
+        b.renameFields = loaded.renameFields();
+        b.renameLocalVars = loaded.renameLocalVars();
+        b.stringStrength = loaded.stringStrength();
+        b.flowTechnique = loaded.flowTechnique();
+        b.flowComplexity = loaded.flowComplexity();
+        b.opaqueType = loaded.opaqueType();
+        b.numberOnlyMagic = loaded.numberOnlyMagic();
+        b.invokeDynamicAutoDetectLambdas = loaded.invokeDynamicAutoDetectLambdas();
+        b.exemptions = new ArrayList<>(loaded.exemptions());
+        b.autoExempt = loaded.autoExempt();
+        b.dryRun = loaded.dryRun();
+        b.saveMapping = loaded.saveMapping();
+        b.verifyAfterEach = loaded.verifyAfterEach();
+        b.failOnVerifyError = loaded.failOnVerifyError();
+        // transformer-enabled flags
+        b.renamerEnabled = loaded.isTransformerEnabled("renamer");
+        b.stringEncryptionEnabled = loaded.isTransformerEnabled("string-encryption");
+        b.flowEnabled = loaded.isTransformerEnabled("flow-obfuscation");
+        b.bogusExceptionEnabled = loaded.isTransformerEnabled("bogus-exception");
+        b.opaqueEnabled = loaded.isTransformerEnabled("opaque-predicates");
+        b.numberEnabled = loaded.isTransformerEnabled("number-obfuscation");
+        b.invokeDynamicEnabled = loaded.isTransformerEnabled("invokedynamic");
+        b.localVarEnabled = loaded.isTransformerEnabled("local-variable");
+        return b;
+    }
+
+    public static void main(String[] args) {
+        int code = new CommandLine(new Main()).execute(args);
+        System.exit(code);
+    }
+
+    @Command(name = "retrace", description = "De-obfuscate a stack trace using a mapping file")
+    public static class RetraceSubcommand implements Callable<Integer> {
+
+        @Option(names = {"--mapping"}, required = true, description = "Mapping file produced by --save-mapping")
+        Path mapping;
+
+        @Option(names = {"--trace"}, description = "Input stack trace file (defaults to stdin)")
+        Path trace;
+
+        @Override
+        public Integer call() throws Exception {
+            RetraceTool tool = new RetraceTool(mapping);
+            String input;
+            if (trace != null) {
+                input = java.nio.file.Files.readString(trace);
+            } else {
+                input = new String(System.in.readAllBytes());
+            }
+            String out = tool.retrace(input);
+            System.out.println(out);
+            return 0;
+        }
+    }
+}

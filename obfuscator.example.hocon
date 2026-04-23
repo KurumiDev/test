@@ -1,0 +1,78 @@
+# Example obfuscator config. Copy to obfuscator.hocon and edit to taste.
+
+target: auto
+
+input:  "plugin.jar"
+output: "plugin-obf.jar"
+
+libraries: []
+
+transformers {
+    renamer {
+        enabled = true
+        strategy = ALPHABET          # ALPHABET | UNICODE | CONFUSE | RANDOM_HEX
+        rename-classes = true
+        rename-methods = true
+        rename-fields  = true
+        rename-local-vars = true
+    }
+
+    string-encryption {
+        enabled = true
+        strength = STANDARD          # LIGHT | STANDARD | HEAVY
+    }
+
+    flow-obfuscation {
+        enabled = true
+        technique = BOGUS_JUMPS      # BOGUS_JUMPS | EXCEPTION | GOTO_SPAGHETTI | ALL
+        complexity = 2
+    }
+
+    bogus-exception {
+        enabled = false
+    }
+
+    opaque-predicates {
+        enabled = true
+        type = MATH                  # MATH | RUNTIME | MIXED
+    }
+
+    number-obfuscation {
+        enabled = true
+        only-magic-numbers = true
+    }
+
+    invokedynamic {
+        enabled = false              # keep off when lambdas are present
+        auto-detect-lambdas = true
+    }
+
+    local-variable {
+        enabled = true
+    }
+}
+
+exemptions: [
+    # Full class name:
+    # "com.example.MyPlugin.MyListener"
+
+    # Recursive package:
+    # "com.example.api.**"
+
+    # Member rule:
+    # "com.example.MyCommand#onCommand"
+
+    # Annotation-based (already auto-applied by auto-exempt, but can be forced):
+    # "@org.bukkit.event.EventHandler"
+]
+
+auto-exempt {
+    paper    = true
+    fabric   = true
+    forge    = true
+    bungee   = true
+    velocity = true
+}
+
+verify-after-each = true
+fail-on-verify-error = false
