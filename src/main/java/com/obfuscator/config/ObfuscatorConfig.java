@@ -76,7 +76,7 @@ public class ObfuscatorConfig {
     }
 
     public enum FlowTechnique {
-        BOGUS_JUMPS, EXCEPTION, GOTO_SPAGHETTI, ALL
+        BOGUS_JUMPS, EXCEPTION, GOTO_SPAGHETTI, SWITCH_DISPATCH, ALL
     }
 
     public enum OpaquePredicateType {
@@ -403,5 +403,26 @@ public class ObfuscatorConfig {
      */
     public List<String> getLibrariesAsString() {
         return libraries.stream().map(Path::toString).toList();
+    }
+
+    /**
+     * Получить тип потока как строку (для трансформеров)
+     */
+    public String getFlowTechniqueStr() {
+        return flowTechnique.name();
+    }
+
+    /**
+     * Получить тип opaque predicate как строку (для трансформеров)
+     */
+    public String getOpaquePredicateTypeStr() {
+        return opaquePredicateType.name();
+    }
+
+    /**
+     * Получить силу шифрования как строку (для трансформеров)
+     */
+    public String getEncryptionStrengthStr() {
+        return encryptionStrength.name();
     }
 }

@@ -1,40 +1,22 @@
 ```
-# Compiled and build artifacts
+# Compiled Java classes
 *.class
+
+# JAR files and build artifacts
 *.jar
 *.war
 *.ear
-*.zip
-*.tar
-*.gz
-*.tgz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
-*.lz4
-*.lzh
-*.cab
-*.arj
-*.rpm
-*.deb
-*.Z
-*.lz
-*.lzo
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
+target/
 
 # Dependencies
-target/
-.gradle/
-build/
+lib/
+libs/
 
-# Logs and temp files
+# Test artifacts
+test-jars/
+
+# Logs
 *.log
-*.tmp
 
 # Environment
 .env
@@ -47,38 +29,19 @@ build/
 *.swp
 *.swo
 
-# Coverage reports
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Python specific
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg-info/
-.eggs/
-.mypy_cache/
-.pytest_cache/
-.tox/
+# Gradle
+.gradle/
+build/
 
-# Java specific
-*.class
-*.jar
-*.war
-*.ear
-*.jmod
-!test-jars/test-plugin.jar
-!test-jars/test-plugin-obf.jar
-
-# Distribution artifacts
-dist/
-out/
-
-# System files
-.DS_Store
-Thumbs.db
+# Temporary files
+*.tmp
 ```
