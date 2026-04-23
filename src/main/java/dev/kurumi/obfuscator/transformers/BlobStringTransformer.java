@@ -93,6 +93,7 @@ public class BlobStringTransformer implements Transformer {
         String offsetsField = PREFIX + suffix + "o";
         String cacheField = PREFIX + suffix + "c";
         String decoder = PREFIX + suffix;
+        String helper = PREFIX + suffix + "h";
 
         // Phase 1: collect all distinct LDC string constants.
         LinkedHashMap<String, Integer> indexByString = new LinkedHashMap<>();
@@ -131,8 +132,20 @@ public class BlobStringTransformer implements Transformer {
             System.arraycopy(bs, 0, raw, p, bs.length);
             p += bs.length;
         }
-        int seed = seedFor(cn.name);
-        byte[] enc = encrypt(raw, seed);
+        // Runtime class-identity binding: encryption uses
+        //   effectiveSeed = seedFor(cn.name) ^ dotted.hashCode()
+        // where `dotted` is the class's dotted name. At runtime, <clinit>
+        // recovers this value as
+        //   literal ^ MethodHandles.lookup().lookupClass().getName().hashCode()
+        // where `literal` is seedFor(cn.name) emitted as a regular LDC.
+        // If the decoder infrastructure is copied to another class, the
+        // runtime lookupClass().getName() returns the copy's name, its
+        // hashCode differs, the recovered seed differs, and decryption
+        // produces garbage \u2014 without any network calls or HWID binding.
+        int literalSeed = seedFor(cn.name);
+        int classNameHash = cn.name.replace('/', '.').hashCode();
+        int effectiveSeed = literalSeed ^ classNameHash;
+        byte[] enc = encrypt(raw, effectiveSeed);
         String encB64 = Base64.getEncoder().encodeToString(enc);
 
         // Phase 3: inject fields.
@@ -152,8 +165,17 @@ public class BlobStringTransformer implements Transformer {
                     cacheField, "[Ljava/lang/String;", null, null));
         }
 
-        // Phase 4: inject <clinit> prefix to initialize blob + offsets.
-        injectClinitPrefix(cn, encB64, offsets, seed, blobField, offsetsField, cacheField);
+        // Phase 4: inject the XOR-decryption helper method and <clinit>
+        // prefix. The helper is split out of <clinit> so that copying just
+        // <clinit> into another project is useless without also copying
+        // the helper, AND the helper's output is seeded with a runtime
+        // value tied to the enclosing class's identity via
+        // MethodHandles.lookup().lookupClass().getName().hashCode().
+        if (!hasMethod(cn, helper, "([BI)[B")) {
+            cn.methods.add(buildHelper(cn, helper));
+        }
+        injectClinitPrefix(cn, encB64, offsets, literalSeed, blobField, offsetsField,
+                cacheField, helper);
 
         // Phase 5: inject decoder method.
         if (!hasMethod(cn, decoder, "(I)Ljava/lang/String;")) {
@@ -254,7 +276,8 @@ public class BlobStringTransformer implements Transformer {
      * {@code <clinit>} if the class doesn't already have one.
      */
     private void injectClinitPrefix(ClassNode cn, String encB64, int[] offsets, int seed,
-                                    String blobField, String offsetsField, String cacheField) {
+                                    String blobField, String offsetsField, String cacheField,
+                                    String helper) {
         MethodNode clinit = null;
         for (MethodNode m : cn.methods) {
             if ("<clinit>".equals(m.name) && "()V".equals(m.desc)) {
@@ -278,72 +301,35 @@ public class BlobStringTransformer implements Transformer {
                 "decode", "(Ljava/lang/String;)[B", false));
         // Stack: [raw]
 
-        // int len = raw.length
-        prefix.add(new InsnNode(Opcodes.DUP));
-        prefix.add(new InsnNode(Opcodes.ARRAYLENGTH));
-        // Stack: [raw, len]
-
-        // byte[] out = new byte[len]
-        prefix.add(new InsnNode(Opcodes.DUP));
-        prefix.add(new IntInsnNode(Opcodes.NEWARRAY, Opcodes.T_BYTE));
-        // Stack: [raw, len, out]
-
-        // XOR loop: for i in 0..len { out[i] = raw[i] ^ ((k ^ (i * 0x9E3779B9)) & 0xFF); k = k*...+...; }
-        // We use locals: 0=raw, 1=len, 2=out, 3=k, 4=i (local reservation)
-        int Lraw = clinit.maxLocals + 0;
-        int Lout = clinit.maxLocals + 1;
-        int Lk = clinit.maxLocals + 2;
-        int Li = clinit.maxLocals + 3;
-        int Llen = clinit.maxLocals + 4;
-
-        prefix.add(new VarInsnNode(Opcodes.ASTORE, Lout));   // out
-        prefix.add(new VarInsnNode(Opcodes.ISTORE, Llen));   // len
-        prefix.add(new VarInsnNode(Opcodes.ASTORE, Lraw));   // raw
+        // int effectiveSeed = LITERAL ^ MethodHandles.lookup()
+        //                                  .lookupClass().getName().hashCode();
+        //
+        // LITERAL is the obfuscator-time seed XOR'd with the expected class
+        // name hash, so that when runtime lookupClass().getName() matches,
+        // effectiveSeed recovers the actual encryption key. If someone
+        // extracts this <clinit> into another class, lookupClass() returns
+        // the new class, hashes to a different value, effectiveSeed is wrong
+        // and decryption yields garbage.
         prefix.add(new LdcInsnNode(Integer.valueOf(seed)));
-        prefix.add(new VarInsnNode(Opcodes.ISTORE, Lk));
-        prefix.add(new InsnNode(Opcodes.ICONST_0));
-        prefix.add(new VarInsnNode(Opcodes.ISTORE, Li));
-
-        LabelNode loop = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        prefix.add(loop);
-        prefix.add(new VarInsnNode(Opcodes.ILOAD, Li));
-        prefix.add(new VarInsnNode(Opcodes.ILOAD, Llen));
-        prefix.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        // out[i] = raw[i] ^ ((k ^ (i * MUL)) & 0xFF)
-        prefix.add(new VarInsnNode(Opcodes.ALOAD, Lout));
-        prefix.add(new VarInsnNode(Opcodes.ILOAD, Li));
-        prefix.add(new VarInsnNode(Opcodes.ALOAD, Lraw));
-        prefix.add(new VarInsnNode(Opcodes.ILOAD, Li));
-        prefix.add(new InsnNode(Opcodes.BALOAD));
-        // stack: raw[i] (int, sign-extended)
-        prefix.add(new VarInsnNode(Opcodes.ILOAD, Lk));
-        prefix.add(new VarInsnNode(Opcodes.ILOAD, Li));
-        prefix.add(new LdcInsnNode(Integer.valueOf(0x9E3779B9)));
-        prefix.add(new InsnNode(Opcodes.IMUL));
+        prefix.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "java/lang/invoke/MethodHandles", "lookup",
+                "()Ljava/lang/invoke/MethodHandles$Lookup;", false));
+        prefix.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandles$Lookup", "lookupClass",
+                "()Ljava/lang/Class;", false));
+        prefix.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                "java/lang/Class", "getName", "()Ljava/lang/String;", false));
+        prefix.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                "java/lang/String", "hashCode", "()I", false));
         prefix.add(new InsnNode(Opcodes.IXOR));
-        prefix.add(new IntInsnNode(Opcodes.SIPUSH, 0xFF));
-        prefix.add(new InsnNode(Opcodes.IAND));
-        // stack: raw[i], maskedK
-        prefix.add(new InsnNode(Opcodes.IXOR));
-        prefix.add(new InsnNode(Opcodes.I2B));
-        prefix.add(new InsnNode(Opcodes.BASTORE));
+        // Stack: [raw, effectiveSeed]
 
-        // k = k * 0x45D9F3B + 0x119DE1F3
-        prefix.add(new VarInsnNode(Opcodes.ILOAD, Lk));
-        prefix.add(new LdcInsnNode(Integer.valueOf(0x45D9F3B)));
-        prefix.add(new InsnNode(Opcodes.IMUL));
-        prefix.add(new LdcInsnNode(Integer.valueOf(0x119DE1F3)));
-        prefix.add(new InsnNode(Opcodes.IADD));
-        prefix.add(new VarInsnNode(Opcodes.ISTORE, Lk));
+        // byte[] dec = $obfXXXh(raw, effectiveSeed);
+        prefix.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, helper,
+                "([BI)[B", false));
+        // Stack: [dec]
 
-        prefix.add(new IincInsnNode(Li, 1));
-        prefix.add(new JumpInsnNode(Opcodes.GOTO, loop));
-        prefix.add(loopEnd);
-
-        // blobField = out
-        prefix.add(new VarInsnNode(Opcodes.ALOAD, Lout));
+        // blobField = dec
         prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, blobField, "[B"));
 
         // offsetsField = new int[]{offsets...}
@@ -364,8 +350,93 @@ public class BlobStringTransformer implements Transformer {
                 "[Ljava/lang/String;"));
 
         clinit.instructions.insert(prefix);
-        clinit.maxLocals = Math.max(clinit.maxLocals, Llen + 1);
+        // Stack high water: [arrayref, index, value] during IASTORE loop = 3.
+        // COMPUTE_FRAMES will tighten this; use 6 as conservative floor.
         clinit.maxStack = Math.max(clinit.maxStack, 6);
+    }
+
+    /**
+     * XOR-decryption helper split out of {@code <clinit>}. Takes the
+     * Base64-decoded ciphertext and the per-class effective seed (already
+     * XOR'd with the runtime class-identity hash in the caller) and
+     * returns the plaintext byte array. Kept as a separate method so that
+     * copying just {@code <clinit>} into an attacker project is
+     * insufficient \u2014 the attacker must also copy this helper and wire
+     * the cross-call correctly.
+     *
+     * <pre>
+     * private static synthetic byte[] $obf&lt;suffix&gt;h(byte[] enc, int seed) {
+     *   byte[] out = new byte[enc.length];
+     *   int k = seed;
+     *   for (int i = 0; i &lt; enc.length; i++) {
+     *     out[i] = (byte) (enc[i] ^ ((k ^ (i * 0x9E3779B9)) &amp; 0xFF));
+     *     k = k * 0x45D9F3B + 0x119DE1F3;
+     *   }
+     *   return out;
+     * }
+     * </pre>
+     */
+    private MethodNode buildHelper(ClassNode cn, String helper) {
+        MethodNode m = new MethodNode(
+                Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
+                helper, "([BI)[B", null, null);
+
+        // Locals: 0=enc, 1=seed(k), 2=out, 3=i
+        InsnList il = m.instructions;
+
+        // byte[] out = new byte[enc.length];
+        il.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        il.add(new InsnNode(Opcodes.ARRAYLENGTH));
+        il.add(new IntInsnNode(Opcodes.NEWARRAY, Opcodes.T_BYTE));
+        il.add(new VarInsnNode(Opcodes.ASTORE, 2));
+
+        // int i = 0;
+        il.add(new InsnNode(Opcodes.ICONST_0));
+        il.add(new VarInsnNode(Opcodes.ISTORE, 3));
+
+        LabelNode loop = new LabelNode();
+        LabelNode loopEnd = new LabelNode();
+        il.add(loop);
+        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        il.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        il.add(new InsnNode(Opcodes.ARRAYLENGTH));
+        il.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+
+        // out[i] = enc[i] ^ ((k ^ (i * 0x9E3779B9)) & 0xFF)
+        il.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        il.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        il.add(new InsnNode(Opcodes.BALOAD));
+        il.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        il.add(new LdcInsnNode(Integer.valueOf(0x9E3779B9)));
+        il.add(new InsnNode(Opcodes.IMUL));
+        il.add(new InsnNode(Opcodes.IXOR));
+        il.add(new IntInsnNode(Opcodes.SIPUSH, 0xFF));
+        il.add(new InsnNode(Opcodes.IAND));
+        il.add(new InsnNode(Opcodes.IXOR));
+        il.add(new InsnNode(Opcodes.I2B));
+        il.add(new InsnNode(Opcodes.BASTORE));
+
+        // k = k * 0x45D9F3B + 0x119DE1F3;
+        il.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        il.add(new LdcInsnNode(Integer.valueOf(0x45D9F3B)));
+        il.add(new InsnNode(Opcodes.IMUL));
+        il.add(new LdcInsnNode(Integer.valueOf(0x119DE1F3)));
+        il.add(new InsnNode(Opcodes.IADD));
+        il.add(new VarInsnNode(Opcodes.ISTORE, 1));
+
+        il.add(new IincInsnNode(3, 1));
+        il.add(new JumpInsnNode(Opcodes.GOTO, loop));
+        il.add(loopEnd);
+
+        il.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        il.add(new InsnNode(Opcodes.ARETURN));
+
+        m.maxLocals = 4;
+        m.maxStack = 6;
+        return m;
     }
 
     /**
