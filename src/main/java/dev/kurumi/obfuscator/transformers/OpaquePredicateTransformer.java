@@ -78,6 +78,10 @@ public class OpaquePredicateTransformer implements Transformer {
         if (mn.instructions == null || mn.instructions.size() < 3) return false;
         if (mn.name.startsWith("<")) return false;     // clinit / init handled separately
         if (mn.name.startsWith("$obf")) return false;
+        // Honeypot decoys are also synthetic; injecting an opaque predicate
+        // that calls a honeypot from inside a honeypot produces a recursive
+        // self-call that blows the stack at runtime.
+        if (looksLikeHoneypot(mn.name)) return false;
         if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) return false;
         return true;
     }
@@ -88,16 +92,82 @@ public class OpaquePredicateTransformer implements Transformer {
         LabelNode skip = new LabelNode();
         InsnList il = new InsnList();
         int strategy = choose(type);
-        switch (strategy) {
-            case 0 -> emitLowBitPredicate(cn, il, skip);        // $op[0] low bit == 0  ->  false
-            case 1 -> emitAvailProcessorsPredicate(il, skip);   // Runtime procs > 0    ->  true
-            default -> emitSelfDifferencePredicate(cn, il, skip); // $op[0] - $op[0] != 0 -> false
+
+        // Prefer the honeypot strategy when the class has a suitable decoy
+        // method available: the decompiled output will contain what looks
+        // like a license / integrity / telemetry gate at the top of every
+        // real method, forcing a reverser (human or LLM) to prove the
+        // decoy is dead before dismissing the branch.
+        MethodNode honeypot = pickHoneypot(cn);
+        if (honeypot != null && ThreadLocalRandom.current().nextBoolean()) {
+            emitHoneypotPredicate(cn, il, skip, honeypot);
+        } else {
+            switch (strategy) {
+                case 0 -> emitLowBitPredicate(cn, il, skip);        // $op[0] low bit == 0  ->  false
+                case 1 -> emitAvailProcessorsPredicate(il, skip);   // Runtime procs > 0    ->  true
+                default -> emitSelfDifferencePredicate(cn, il, skip); // $op[0] - $op[0] != 0 -> false
+            }
         }
         il.add(new InsnNode(Opcodes.ACONST_NULL));
         il.add(new InsnNode(Opcodes.ATHROW));
         il.add(skip);
         mn.instructions.insertBefore(point, il);
         return true;
+    }
+
+    /**
+     * Finds a honeypot decoy on {@code cn} we can call as an opaque-predicate
+     * argument. Matches names emitted by {@link JunkCodeInjector} &mdash; any
+     * method named {@code <misleading>_<hex>} with signature {@code (J)J}.
+     *
+     * <p>Calling a honeypot from a real method gives the decompiler output a
+     * visible cross-reference: {@code checkLicense_abc123(...)} becomes a
+     * call site from {@code onEnable} or {@code onCommand}, so the decoy
+     * looks load-bearing. Dead-code analysis <em>can</em> still prove the
+     * result is discarded, but an LLM-driven reverser tends to narrate the
+     * call as real business logic first and only later notice the tautology.
+     */
+    private static MethodNode pickHoneypot(ClassNode cn) {
+        MethodNode candidate = null;
+        for (MethodNode m : cn.methods) {
+            if ((m.access & Opcodes.ACC_STATIC) == 0) continue;
+            if (!"(J)J".equals(m.desc)) continue;
+            if (!looksLikeHoneypot(m.name)) continue;
+            candidate = m;
+            // Don't break &mdash; pick the last one so randomization is
+            // effectively driven by member-shuffler later.
+        }
+        return candidate;
+    }
+
+    private static boolean looksLikeHoneypot(String name) {
+        int under = name.indexOf('_');
+        if (under <= 0 || under >= name.length() - 1) return false;
+        String root = name.substring(0, under);
+        for (String r : JunkCodeInjector.MISLEADING_NAMES()) {
+            if (r.equals(root)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Emits <code>if ((honeypot(nanoTime()) | 1L) == 0L) throw null;</code>
+     * &mdash; tautologically false, never executed, but the call site
+     * references a decoy method that <em>looks</em> like anti-cheat or
+     * license logic. Kept as a single-slot predicate (no frame growth).
+     */
+    private static void emitHoneypotPredicate(ClassNode cn, InsnList il, LabelNode skip,
+                                              MethodNode honeypot) {
+        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/System", "nanoTime",
+                "()J", false));
+        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, honeypot.name, honeypot.desc,
+                false));
+        il.add(new org.objectweb.asm.tree.LdcInsnNode(1L));
+        il.add(new InsnNode(Opcodes.LOR));
+        il.add(new InsnNode(Opcodes.LCONST_0));
+        il.add(new InsnNode(Opcodes.LCMP));
+        // (x | 1) != 0 always at runtime, so IFNE skips the throw null.
+        il.add(new JumpInsnNode(Opcodes.IFNE, skip));
     }
 
     // Seeded predicate: ($op[0] & 1L) == 0L  →  always false at runtime, unprovable statically.
