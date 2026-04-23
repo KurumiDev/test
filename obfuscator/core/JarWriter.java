@@ -4,6 +4,8 @@ import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.tree.ClassNode;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.file.Files;
 import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -17,8 +19,8 @@ import java.util.zip.Deflater;
 public class JarWriter {
 
     public static void write(Path outputPath, ClassPool pool, boolean computeFrames) throws IOException {
-        try (JarOutputStream jos = new JarOutputStream(
-                outputPath.toFile().toOutputStream())) {
+        try (OutputStream os = Files.newOutputStream(outputPath);
+             JarOutputStream jos = new JarOutputStream(os)) {
             
             jos.setLevel(Deflater.BEST_COMPRESSION);
 

@@ -99,7 +99,11 @@ public class ClassPool {
         return cn;
     }
 
-    public Collection<ClassNode> getOwnClasses() {
+    public Map<String, ClassNode> getOwnClasses() {
+        return ownClasses;
+    }
+
+    public Collection<ClassNode> getOwnClassesCollection() {
         return ownClasses.values();
     }
 
@@ -109,6 +113,14 @@ public class ClassPool {
 
     public Map<String, byte[]> getResources() {
         return resources;
+    }
+
+    public Collection<ClassNode> getRuntimeInjectedClasses() {
+        return runtimeInjected.values();
+    }
+
+    public Map<String, ClassNode> getRuntimeInjected() {
+        return runtimeInjected;
     }
 
     public Collection<ClassNode> getAllClasses() {

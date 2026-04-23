@@ -25,7 +25,7 @@ public class LocalVariableTransformer {
         LOG.info("Starting local variable renaming...");
         int totalRenamed = 0;
 
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             for (MethodNode mn : cn.methods) {
                 totalRenamed += renameLocals(mn);
             }

@@ -56,7 +56,7 @@ public class FlowObfuscationTransformer implements Opcodes {
         
         int transformedMethods = 0;
         
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             // Пропускаем интерфейсы, абстрактные классы
             if ((cn.access & ACC_INTERFACE) != 0 || (cn.access & ACC_ABSTRACT) != 0) {
                 continue;

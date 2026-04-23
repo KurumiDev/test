@@ -121,7 +121,7 @@ public class Obfuscator {
         exemptionResolver.resolve(pool);
         
         // Detect lambdas
-        var classesWithLambdas = LambdaDetector.scanClasses(pool.getOwnClasses());
+        var classesWithLambdas = LambdaDetector.scanClasses(pool.getOwnClassesCollection());
         
         LOG.info("Analysis complete");
     }
@@ -189,9 +189,9 @@ public class Obfuscator {
         LOG.info("=== PHASE 4: VERIFICATION ===");
         
         int errors = 0;
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             try {
-                byte[] bytes = pool.writeClass(cn);
+                byte[] bytes = writeClass(cn);
                 // Try to load in isolated ClassLoader
                 testLoad(cn.name, bytes);
             } catch (Exception e) {
@@ -205,6 +205,12 @@ public class Obfuscator {
         } else {
             LOG.info("Verification passed for all classes");
         }
+    }
+
+    private static byte[] writeClass(ClassNode cn) {
+        org.objectweb.asm.ClassWriter cw = new org.objectweb.asm.ClassWriter(org.objectweb.asm.ClassWriter.COMPUTE_FRAMES);
+        cn.accept(cw);
+        return cw.toByteArray();
     }
 
     private void testLoad(String className, byte[] bytes) {

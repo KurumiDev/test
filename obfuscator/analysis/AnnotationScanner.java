@@ -57,7 +57,7 @@ public class AnnotationScanner {
     public void scan(ClassPool pool) {
         LOG.info("Scanning for protected annotations...");
 
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             scanClass(cn);
         }
 

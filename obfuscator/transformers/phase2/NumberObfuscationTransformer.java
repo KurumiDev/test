@@ -32,7 +32,7 @@ public class NumberObfuscationTransformer {
                 minValue, useXor, useBitwise);
         int totalTransformed = 0;
 
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null) continue;
                 totalTransformed += obfuscateMethod(mn);

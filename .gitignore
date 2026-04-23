@@ -1,21 +1,45 @@
 ```
 # Compiled and build artifacts
 *.class
-*.o
-*.obj
-*.out
-build/
-dist/
+*.jar
+*.war
+*.ear
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+*.gz
+*.bz2
+*.xz
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.7z
+*.rar
 
 # Dependencies
-lib/
-libs/
 target/
 .gradle/
-
-# Logs and temp files
-*.log
-*.tmp
+.mypy_cache/
+.pytest_cache/
+__pycache__/
+*.egg-info/
+node_modules/
+venv/
+.venv/
+.env
+.env.local
+*.env.*
 
 # Editors
 .vscode/
@@ -23,28 +47,21 @@ target/
 *.swp
 *.swo
 
-# Environment
-.env
-.env.local
-*.env.*
+# System
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+*.out
 
 # Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Python specific
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-pip-log.txt
-pip-delete-this-directory.txt
-*.so
-*.egg-info/
-.eggs/
+# Build artifacts
+dist/
+build/
 ```

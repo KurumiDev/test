@@ -63,6 +63,10 @@ public class MappingTable {
         return methods != null ? methods.get(original) : original;
     }
 
+    public Map<String, String> getClassMappings() {
+        return classMappings;
+    }
+
     public boolean hasClassMapping(String original) {
         return classMappings.containsKey(original);
     }

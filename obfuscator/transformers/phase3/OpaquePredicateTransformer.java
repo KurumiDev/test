@@ -47,7 +47,7 @@ public class OpaquePredicateTransformer implements Opcodes {
         
         int predicatesAdded = 0;
         
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             if ((cn.access & ACC_INTERFACE) != 0 || (cn.access & ACC_ABSTRACT) != 0) {
                 continue;
             }
@@ -76,7 +76,7 @@ public class OpaquePredicateTransformer implements Opcodes {
         opaqueFieldName = generateFieldName();
         
         // Добавляем поле в первый подходящий класс
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             if ((cn.access & ACC_INTERFACE) == 0) {
                 FieldNode fn = new FieldNode(
                     ACC_PRIVATE | ACC_STATIC | ACC_FINAL,

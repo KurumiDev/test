@@ -30,7 +30,7 @@ public class InheritanceGraph {
         LOG.info("Building inheritance graph...");
 
         // First pass: collect all parent relationships
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             analyzeClass(cn);
         }
         for (ClassNode cn : pool.getLibClasses()) {

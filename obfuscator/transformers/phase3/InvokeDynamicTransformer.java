@@ -37,7 +37,7 @@ public class InvokeDynamicTransformer implements Opcodes {
         
         int transformedCalls = 0;
         
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             // Пропускаем интерфейсы
             if ((cn.access & ACC_INTERFACE) != 0) continue;
             

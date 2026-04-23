@@ -73,7 +73,7 @@ public class Main implements Callable<Integer> {
         System.out.println("=== Java Bytecode Obfuscator v1.0.0 ===");
         
         if (verbose) {
-            System.setProperty(org.slf4j.impl.SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "DEBUG");
+            System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug");
         }
 
         Obfuscator.Config config = new Obfuscator.Config();

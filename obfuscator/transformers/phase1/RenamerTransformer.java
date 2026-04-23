@@ -72,11 +72,110 @@ public class RenamerTransformer {
         Map<String, Map<String, String>> methodMappings = buildMethodMappings(classMappings);
         Map<String, Map<String, String>> fieldMappings = buildFieldMappings(classMappings);
 
-        // Apply remapping to all classes
-        RemapperImpl remapper = new RemapperImpl(classMappings, methodMappings, fieldMappings);
+        // Apply remapping to all classes manually
+        // Build global remapper
+        RemapperImpl globalRemapper = new RemapperImpl(classMappings, methodMappings, fieldMappings);
         
-        for (ClassNode cn : pool.getOwnClasses()) {
-            cn.accept(remapper);
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
+            // Rename class itself
+            String newClassName = classMappings.get(cn.name);
+            if (newClassName != null) {
+                cn.name = newClassName;
+            }
+            
+            // Rename super class
+            if (cn.superName != null) {
+                cn.superName = globalRemapper.map(cn.superName);
+            }
+            
+            // Rename interfaces
+            if (cn.interfaces != null) {
+                for (int i = 0; i < cn.interfaces.size(); i++) {
+                    cn.interfaces.set(i, globalRemapper.map(cn.interfaces.get(i)));
+                }
+            }
+            
+            // Rename fields
+            if (cn.fields != null) {
+                for (var fn : cn.fields) {
+                    fn.name = globalRemapper.mapFieldName(cn.name, fn.name, fn.desc);
+                    fn.desc = globalRemapper.mapDesc(fn.desc);
+                    if (fn.signature != null) {
+                        fn.signature = globalRemapper.mapSignature(fn.signature, false);
+                    }
+                }
+            }
+            
+            // Rename methods
+            if (cn.methods != null) {
+                for (var mn : cn.methods) {
+                    mn.name = globalRemapper.mapMethodName(cn.name, mn.name, mn.desc);
+                    mn.desc = globalRemapper.mapMethodDesc(mn.desc);
+                    if (mn.signature != null) {
+                        mn.signature = globalRemapper.mapSignature(mn.signature, false);
+                    }
+                    
+                    // Rename exceptions
+                    if (mn.exceptions != null) {
+                        for (int i = 0; i < mn.exceptions.size(); i++) {
+                            mn.exceptions.set(i, globalRemapper.map(mn.exceptions.get(i)));
+                        }
+                    }
+                    
+                    // Process instructions
+                    for (var insn : mn.instructions) {
+                        if (insn instanceof org.objectweb.asm.tree.FieldInsnNode fin) {
+                            fin.owner = globalRemapper.map(fin.owner);
+                            fin.name = globalRemapper.mapFieldName(fin.owner, fin.name, fin.desc);
+                            fin.desc = globalRemapper.mapDesc(fin.desc);
+                        } else if (insn instanceof org.objectweb.asm.tree.MethodInsnNode min) {
+                            min.owner = globalRemapper.map(min.owner);
+                            min.name = globalRemapper.mapMethodName(min.owner, min.name, min.desc);
+                            min.desc = globalRemapper.mapMethodDesc(min.desc);
+                        } else if (insn instanceof org.objectweb.asm.tree.TypeInsnNode tin) {
+                            int opcode = tin.getOpcode();
+                            if (opcode == Opcodes.ANEWARRAY || opcode == Opcodes.CHECKCAST || 
+                                opcode == Opcodes.INSTANCEOF || opcode == Opcodes.NEW) {
+                                tin.desc = globalRemapper.map(tin.desc);
+                            }
+                        } else if (insn instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode idyn) {
+                            idyn.desc = globalRemapper.mapMethodDesc(idyn.desc);
+                            // Remap bootstrap method args if they contain types
+                            for (int i = 0; i < idyn.bsmArgs.length; i++) {
+                                if (idyn.bsmArgs[i] instanceof org.objectweb.asm.Type t) {
+                                    org.objectweb.asm.Type mappedType = globalRemapper.mapType(t);
+                                    idyn.bsmArgs[i] = mappedType;
+                                }
+                            }
+                        } else if (insn instanceof org.objectweb.asm.tree.LdcInsnNode ldc) {
+                            if (ldc.cst instanceof org.objectweb.asm.Type t) {
+                                ldc.cst = globalRemapper.mapType(t);
+                            }
+                        } else if (insn instanceof org.objectweb.asm.tree.MultiANewArrayInsnNode man) {
+                            man.desc = globalRemapper.mapDesc(man.desc);
+                        }
+                    }
+                    
+                    // Rename local variables
+                    if (mn.localVariables != null) {
+                        for (var lv : mn.localVariables) {
+                            if (lv.signature != null) {
+                                lv.signature = globalRemapper.mapSignature(lv.signature, false);
+                            }
+                            lv.desc = globalRemapper.mapDesc(lv.desc);
+                        }
+                    }
+                    
+                    // Rename try-catch blocks
+                    if (mn.tryCatchBlocks != null) {
+                        for (var tcb : mn.tryCatchBlocks) {
+                            if (tcb.type != null) {
+                                tcb.type = globalRemapper.map(tcb.type);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         LOG.info("Renaming complete: {} classes, {} methods, {} fields renamed",
@@ -90,7 +189,7 @@ public class RenamerTransformer {
         
         if (!renameClasses) return mappings;
 
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             if (exemptions.isClassExempt(cn.name)) {
                 LOG.debug("Skipping exempt class: {}", cn.name);
                 continue;
@@ -115,7 +214,7 @@ public class RenamerTransformer {
 
         if (!renameMethods) return mappings;
 
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             String mappedClassName = classMappings.getOrDefault(cn.name, cn.name);
             Map<String, String> classMethodMappings = new HashMap<>();
 
@@ -152,7 +251,7 @@ public class RenamerTransformer {
 
         if (!renameFields) return mappings;
 
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             String mappedClassName = classMappings.getOrDefault(cn.name, cn.name);
             Map<String, String> classFieldMappings = new HashMap<>();
 
@@ -338,6 +437,24 @@ public class RenamerTransformer {
                 }
             }
             return type;
+        }
+
+        public org.objectweb.asm.Type mapType(org.objectweb.asm.Type type) {
+            if (type.getSort() == org.objectweb.asm.Type.OBJECT || type.getSort() == org.objectweb.asm.Type.ARRAY) {
+                String mapped = mapType(type.getInternalName());
+                return org.objectweb.asm.Type.getType("L" + mapped + ";");
+            }
+            return type;
+        }
+
+        public String mapSignature(String signature, boolean typeSignature) {
+            if (signature == null) return null;
+            // Simple signature remapping - just replace class names
+            String result = signature;
+            for (Map.Entry<String, String> entry : classMappings.entrySet()) {
+                result = result.replace(entry.getKey(), entry.getValue());
+            }
+            return result;
         }
     }
 }

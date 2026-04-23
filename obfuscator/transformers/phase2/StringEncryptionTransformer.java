@@ -41,7 +41,7 @@ public class StringEncryptionTransformer {
                 strength, inlineDecryptor, useSwitchDispatch);
         int totalEncrypted = 0;
 
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             int classEncrypted = encryptClass(cn);
             if (classEncrypted > 0 && inlineDecryptor) {
                 injectDecryptor(cn);

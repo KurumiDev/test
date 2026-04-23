@@ -42,7 +42,7 @@ public class ExemptionResolver {
         exemptFields.addAll(annotationScanner.getProtectedFields());
 
         // From inheritance analysis
-        for (ClassNode cn : pool.getOwnClasses()) {
+        for (ClassNode cn : pool.getOwnClassesCollection()) {
             // Check if class can be renamed based on inheritance
             if (!inheritanceGraph.canRenameClass(cn.name)) {
                 exemptClasses.add(cn.name);
