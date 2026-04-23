@@ -107,8 +107,9 @@ class ClassExplodeTest {
             }
         }
 
-        // We had 1 original; after explosion, expect the default 12 workers.
-        assertTrue(classCount >= 12,
+        // We had 1 original; after explosion, expect the default 12 workers,
+        // so the final JAR must contain at least 13 classes (1 original + 12).
+        assertTrue(classCount >= 13,
                 "expected class count >= 13 after explosion, got " + classCount);
         assertTrue(workerClassNames.size() >= 10,
                 "expected at least 10 worker classes, got " + workerClassNames);

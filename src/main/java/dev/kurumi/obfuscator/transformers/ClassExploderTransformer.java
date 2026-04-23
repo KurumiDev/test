@@ -157,11 +157,17 @@ public class ClassExploderTransformer implements Transformer {
                 | Opcodes.ACC_MODULE | Opcodes.ACC_ENUM;
         if ((cn.access & blockedAccess) != 0) return false;
         // Skip already-synthetic classes so we don't explode worker
-        // classes recursively if this runs twice.
-        if (cn.name.contains("/$w_")) return false;
-        // Skip classes that already look like our workers.
+        // classes recursively if this runs twice. We also check for the
+        // default-package case (no slash in the internal name).
+        if (cn.name.contains("/$w_") || cn.name.startsWith("$w_")) return false;
+        // Skip classes that already look like our workers. Match either
+        // package-qualified names ({@code o/LicenseGuard_abcd1234}) or
+        // default-package names ({@code LicenseGuard_abcd1234}).
         for (String root : MISLEADING_CLASS_NAMES) {
-            if (cn.name.contains("/" + root + "_")) return false;
+            if (cn.name.contains("/" + root + "_")
+                    || cn.name.startsWith(root + "_")) {
+                return false;
+            }
         }
         return true;
     }
