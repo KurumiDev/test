@@ -45,7 +45,8 @@ public class IndyCallTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(IndyCallTransformer.class);
 
-    private static final String BSM_NAME = "$obfIC";
+    private static final String BSM_PREFIX = "$obfIC";
+    private static final String DEC_PREFIX = "$obfICd";
     private static final String BSM_DESC =
             "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
                     + "Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)"
@@ -53,6 +54,26 @@ public class IndyCallTransformer implements Transformer {
 
     // Simple LCG-style rolling XOR for owner/name/desc.
     private static final int INDY_KEY = 0x5A17C0DE;
+
+    /**
+     * Deterministic per-class 8-character alphanumeric suffix so each
+     * class's bootstrap method and decoder helper have a unique name.
+     * Defeats grep-based recovery of every indy bootstrap in the JAR.
+     */
+    private static String classSuffix(String internalName) {
+        long h = 0xCBF29CE484222325L;
+        for (int i = 0; i < internalName.length(); i++) {
+            h ^= internalName.charAt(i);
+            h *= 0x100000001B3L;
+        }
+        char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
+        char[] out = new char[8];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = alphabet[(int) ((h >>> (i * 8)) & 0x3F) % alphabet.length];
+            h = (h ^ (h >>> 7)) * 0xBF58476D1CE4E5B9L;
+        }
+        return new String(out);
+    }
 
     @Override
     public String name() {
@@ -65,15 +86,18 @@ public class IndyCallTransformer implements Transformer {
         int classesTouched = 0;
         for (ClassNode cn : pool.allClassNodes()) {
             if ("module-info".equals(cn.name)) continue;
+            String suffix = classSuffix(cn.name);
+            String bsmName = BSM_PREFIX + suffix;
+            String decName = DEC_PREFIX + suffix;
             int perClass = 0;
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null || mn.instructions.size() == 0) continue;
                 if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) continue;
-                if (BSM_NAME.equals(mn.name) || "$obfICd".equals(mn.name)) continue;
-                perClass += rewriteMethod(cn, mn, pool);
+                if (bsmName.equals(mn.name) || decName.equals(mn.name)) continue;
+                perClass += rewriteMethod(cn, mn, pool, bsmName, decName);
             }
             if (perClass > 0) {
-                injectBootstrap(cn);
+                injectBootstrap(cn, bsmName, decName);
                 classesTouched++;
                 rewritten += perClass;
             }
@@ -86,12 +110,12 @@ public class IndyCallTransformer implements Transformer {
         }
     }
 
-    private int rewriteMethod(ClassNode cn, MethodNode mn, ClassPool pool) {
+    private int rewriteMethod(ClassNode cn, MethodNode mn, ClassPool pool, String bsmName, String decName) {
         List<MethodInsnNode> targets = new ArrayList<>();
         for (AbstractInsnNode insn : mn.instructions.toArray()) {
             if (!(insn instanceof MethodInsnNode min)) continue;
             if (min.name.startsWith("<")) continue;
-            if (BSM_NAME.equals(min.name) || "$obfICd".equals(min.name)) continue;
+            if (bsmName.equals(min.name) || decName.equals(min.name)) continue;
             int op = min.getOpcode();
             if (op != Opcodes.INVOKESTATIC && op != Opcodes.INVOKEVIRTUAL
                     && op != Opcodes.INVOKEINTERFACE) {
@@ -112,7 +136,7 @@ public class IndyCallTransformer implements Transformer {
             String indyDesc = (op == Opcodes.INVOKESTATIC)
                     ? min.desc
                     : "(L" + min.owner + ";" + min.desc.substring(1);
-            Handle bsm = new Handle(Opcodes.H_INVOKESTATIC, cn.name, BSM_NAME, BSM_DESC, false);
+            Handle bsm = new Handle(Opcodes.H_INVOKESTATIC, cn.name, bsmName, BSM_DESC, false);
             InvokeDynamicInsnNode indy = new InvokeDynamicInsnNode(
                     "m",
                     indyDesc,
@@ -138,15 +162,15 @@ public class IndyCallTransformer implements Transformer {
         return java.util.Base64.getEncoder().encodeToString(out);
     }
 
-    private void injectBootstrap(ClassNode cn) {
+    private void injectBootstrap(ClassNode cn, String bsmName, String decName) {
         boolean hasBsm = false;
         boolean hasDec = false;
         for (MethodNode m : cn.methods) {
-            if (BSM_NAME.equals(m.name) && BSM_DESC.equals(m.desc)) hasBsm = true;
-            if ("$obfICd".equals(m.name)) hasDec = true;
+            if (bsmName.equals(m.name) && BSM_DESC.equals(m.desc)) hasBsm = true;
+            if (decName.equals(m.name)) hasDec = true;
         }
-        if (!hasDec) cn.methods.add(buildDecoder(cn));
-        if (!hasBsm) cn.methods.add(buildBsm(cn));
+        if (!hasDec) cn.methods.add(buildDecoder(cn, decName));
+        if (!hasBsm) cn.methods.add(buildBsm(cn, bsmName, decName));
     }
 
     /**
@@ -154,10 +178,10 @@ public class IndyCallTransformer implements Transformer {
      * args. Kept separate so COMPUTE_FRAMES can analyze each method without
      * cross-method type dependencies.
      */
-    private MethodNode buildDecoder(ClassNode cn) {
+    private MethodNode buildDecoder(ClassNode cn, String decName) {
         MethodNode m = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
-                "$obfICd",
+                decName,
                 "(Ljava/lang/String;)Ljava/lang/String;",
                 null,
                 null
@@ -242,10 +266,10 @@ public class IndyCallTransformer implements Transformer {
      * sees a clean join at {@code merge:} with a single operand slot on the
      * stack (the resolved MethodHandle).
      */
-    private MethodNode buildBsm(ClassNode cn) {
+    private MethodNode buildBsm(ClassNode cn, String bsmName, String decName) {
         MethodNode m = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
-                BSM_NAME,
+                bsmName,
                 BSM_DESC,
                 null,
                 new String[]{"java/lang/Throwable"}
@@ -262,7 +286,7 @@ public class IndyCallTransformer implements Transformer {
         il.add(new InsnNode(Opcodes.ICONST_0));
         il.add(new InsnNode(Opcodes.AALOAD));
         il.add(new TypeInsnNode(Opcodes.CHECKCAST, "java/lang/String"));
-        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, "$obfICd",
+        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, decName,
                 "(Ljava/lang/String;)Ljava/lang/String;", false));
         il.add(new VarInsnNode(Opcodes.ASTORE, L_OWNER));
 
@@ -271,7 +295,7 @@ public class IndyCallTransformer implements Transformer {
         il.add(new InsnNode(Opcodes.ICONST_1));
         il.add(new InsnNode(Opcodes.AALOAD));
         il.add(new TypeInsnNode(Opcodes.CHECKCAST, "java/lang/String"));
-        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, "$obfICd",
+        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, decName,
                 "(Ljava/lang/String;)Ljava/lang/String;", false));
         il.add(new VarInsnNode(Opcodes.ASTORE, L_NAMESTR));
 
@@ -280,7 +304,7 @@ public class IndyCallTransformer implements Transformer {
         il.add(new InsnNode(Opcodes.ICONST_2));
         il.add(new InsnNode(Opcodes.AALOAD));
         il.add(new TypeInsnNode(Opcodes.CHECKCAST, "java/lang/String"));
-        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, "$obfICd",
+        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name, decName,
                 "(Ljava/lang/String;)Ljava/lang/String;", false));
         il.add(new VarInsnNode(Opcodes.ASTORE, L_DESC));
 
