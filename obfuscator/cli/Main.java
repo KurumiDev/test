@@ -2,6 +2,8 @@ package cli;
 
 import obfuscator.core.Obfuscator;
 import obfuscator.core.MappingTable;
+import obfuscator.transformers.phase1.RenamerTransformer;
+import obfuscator.transformers.phase2.StringEncryptionTransformer;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
@@ -130,21 +132,21 @@ public class Main implements Callable<Integer> {
         return 0;
     }
 
-    private core.transformers.phase1.RenamerTransformer.NamingStrategy parseStrategy(String s) {
+    private RenamerTransformer.NamingStrategy parseStrategy(String s) {
         try {
-            return core.transformers.phase1.RenamerTransformer.NamingStrategy.valueOf(s.toUpperCase());
+            return RenamerTransformer.NamingStrategy.valueOf(s.toUpperCase());
         } catch (IllegalArgumentException e) {
             System.err.println("Unknown strategy: " + s + ", using ALPHABET");
-            return core.transformers.phase1.RenamerTransformer.NamingStrategy.ALPHABET;
+            return RenamerTransformer.NamingStrategy.ALPHABET;
         }
     }
 
-    private core.transformers.phase2.StringEncryptionTransformer.Strength parseStringStrength(String s) {
+    private StringEncryptionTransformer.Strength parseStringStrength(String s) {
         try {
-            return core.transformers.phase2.StringEncryptionTransformer.Strength.valueOf(s.toUpperCase());
+            return StringEncryptionTransformer.Strength.valueOf(s.toUpperCase());
         } catch (IllegalArgumentException e) {
             System.err.println("Unknown strength: " + s + ", using STANDARD");
-            return core.transformers.phase2.StringEncryptionTransformer.Strength.STANDARD;
+            return StringEncryptionTransformer.Strength.STANDARD;
         }
     }
 }

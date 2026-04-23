@@ -3,6 +3,7 @@ package obfuscator.transformers.phase1;
 import obfuscator.core.ClassPool;
 import obfuscator.core.MappingTable;
 import obfuscator.analysis.ExemptionResolver;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.commons.Remapper;
 import org.objectweb.asm.tree.ClassNode;
 import org.slf4j.Logger;
@@ -96,7 +97,7 @@ public class RenamerTransformer {
             }
 
             // Don't rename record classes (Java 16+)
-            if ((cn.access & org.objectweb.asm.OACC_RECORD) != 0) {
+            if ((cn.access & Opcodes.ACC_RECORD) != 0) {
                 LOG.debug("Skipping record class: {}", cn.name);
                 continue;
             }
@@ -125,7 +126,7 @@ public class RenamerTransformer {
                 }
 
                 // Skip bridge/synthetic methods
-                if ((mn.access & org.objectweb.asm.OACC_BRIDGE) != 0) {
+                if ((mn.access & Opcodes.ACC_BRIDGE) != 0) {
                     continue;
                 }
 
@@ -159,13 +160,13 @@ public class RenamerTransformer {
 
             for (var fn : cn.fields) {
                 // Skip enum constants
-                if ((fn.access & org.objectweb.asm.OACC_ENUM) != 0) {
+                if ((fn.access & Opcodes.ACC_ENUM) != 0) {
                     continue;
                 }
 
                 // Skip final static fields (constants)
-                if ((fn.access & org.objectweb.asm.OACC_FINAL) != 0 &&
-                    (fn.access & org.objectweb.asm.OACC_STATIC) != 0) {
+                if ((fn.access & Opcodes.ACC_FINAL) != 0 &&
+                    (fn.access & Opcodes.ACC_STATIC) != 0) {
                     continue;
                 }
 

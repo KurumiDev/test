@@ -1,6 +1,7 @@
 package obfuscator.transformers.phase1;
 
 import obfuscator.core.ClassPool;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,7 +50,7 @@ public class LocalVariableTransformer {
 
             // Skip parameters if HasSourceDebugInfo attribute exists
             if ((lv.index < mn.maxLocals - mn.maxStack) && 
-                (mn.access & org.objectweb.asm.OACC_STATIC) == 0) {
+                (mn.access & Opcodes.ACC_STATIC) == 0) {
                 // Could be a parameter - still rename for obfuscation
             }
 

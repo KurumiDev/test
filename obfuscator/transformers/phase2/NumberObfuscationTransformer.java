@@ -77,7 +77,7 @@ public class NumberObfuscationTransformer {
 
         // Replace with obfuscated versions
         for (AbstractInsnNode insn : toProcess) {
-            if (obfuscateInstruction(mn, insn)) {
+            if (obfuscateMethod(mn, insn)) {
                 count++;
             }
         }

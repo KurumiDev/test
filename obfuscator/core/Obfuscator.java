@@ -9,6 +9,7 @@ import obfuscator.transformers.phase2.StringEncryptionTransformer;
 import obfuscator.transformers.phase3.FlowObfuscationTransformer;
 import obfuscator.transformers.phase3.OpaquePredicateTransformer;
 import obfuscator.transformers.phase3.InvokeDynamicTransformer;
+import org.objectweb.asm.tree.ClassNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -117,7 +118,7 @@ public class Obfuscator {
         annotationScanner.scan(pool);
         
         // Resolve exemptions
-        exemptionResolver.resolve(pool, compatProfile);
+        exemptionResolver.resolve(pool);
         
         // Detect lambdas
         var classesWithLambdas = LambdaDetector.scanClasses(pool.getOwnClasses());

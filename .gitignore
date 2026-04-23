@@ -11,15 +11,11 @@ dist/
 lib/
 libs/
 target/
+.gradle/
 
 # Logs and temp files
 *.log
 *.tmp
-
-# Environment
-.env
-.env.local
-*.env.*
 
 # Editors
 .vscode/
@@ -27,11 +23,28 @@ target/
 *.swp
 *.swo
 
+# Environment
+.env
+.env.local
+*.env.*
+
 # Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Gradle (if present in Java project)
-.gradle/
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+*.so
+*.egg-info/
+.eggs/
 ```

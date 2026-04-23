@@ -1,6 +1,7 @@
 package obfuscator.analysis;
 
 import obfuscator.core.ClassPool;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.slf4j.Logger;
@@ -144,8 +145,8 @@ public class InheritanceGraph {
                     if (mn.name.equals(name) && mn.desc.equals(desc)) {
                         // Check if it's public or protected (overridable)
                         int access = mn.access;
-                        if ((access & org.objectweb.asm.OACC_PUBLIC) != 0 ||
-                            (access & org.objectweb.asm.OACC_PROTECTED) != 0) {
+                        if ((access & Opcodes.ACC_PUBLIC) != 0 ||
+                            (access & Opcodes.ACC_PROTECTED) != 0) {
                             return false;
                         }
                     }
@@ -162,7 +163,7 @@ public class InheritanceGraph {
     public boolean canRenameField(String owner, String name) {
         // Fields in interfaces cannot be renamed
         ClassNode cn = pool.getClassNode(owner);
-        if (cn != null && (cn.access & org.objectweb.asm.OACC_INTERFACE) != 0) {
+        if (cn != null && (cn.access & Opcodes.ACC_INTERFACE) != 0) {
             return false;
         }
 
@@ -171,7 +172,7 @@ public class InheritanceGraph {
         for (String ancestor : ancestors) {
             ClassNode ancestorClass = pool.getClassNode(ancestor);
             if (ancestorClass != null) {
-                for (org.objectweb.asm.tree.FieldNode fn : ancestorClass.fields) {
+                for (var fn : ancestorClass.fields) {
                     if (fn.name.equals(name)) {
                         return false;
                     }

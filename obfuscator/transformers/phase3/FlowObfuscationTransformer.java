@@ -313,7 +313,7 @@ public class FlowObfuscationTransformer implements Opcodes {
         catchBlock.add(catchEnd);
         
         // Добавляем try-catch таблицу
-        CatchBlockNode catchNode = new CatchBlockNode(tryStart, tryEnd, catchStart, "java/lang/Exception");
+        TryCatchBlockNode catchNode = new TryCatchBlockNode(tryStart, tryEnd, catchStart, "java/lang/Exception");
         mn.tryCatchBlocks.add(catchNode);
         
         // Заменяем инструкции
