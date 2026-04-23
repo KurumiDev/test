@@ -1,0 +1,165 @@
+package core;
+
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.tree.ClassNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.jar.JarOutputStream;
+
+/**
+ * Central repository for all classes being processed.
+ * Holds own classes (to obfuscate), library classes (analysis only),
+ * resources, and runtime-injected helper classes.
+ */
+public class ClassPool {
+    private static final Logger LOG = LoggerFactory.getLogger(ClassPool.class);
+
+    // Classes that will be obfuscated
+    private final Map<String, ClassNode> ownClasses = new LinkedHashMap<>();
+    // Library classes for analysis only (not obfuscated)
+    private final Map<String, ClassNode> libClasses = new LinkedHashMap<>();
+    // Non-class resources from JARs
+    private final Map<String, byte[]> resources = new LinkedHashMap<>();
+    // Runtime helper classes injected by obfuscator
+    private final Map<String, ClassNode> runtimeInjected = new LinkedHashMap<>();
+
+    public void loadJar(Path jar) throws IOException {
+        LOG.info("Loading JAR: {}", jar);
+        try (JarFile jf = new JarFile(jar.toFile())) {
+            for (JarEntry e : Collections.list(jf.entries())) {
+                if (e.isDirectory()) continue;
+                byte[] bytes = jf.getInputStream(e).readAllBytes();
+                String entryName = e.getName();
+                
+                if (entryName.endsWith(".class")) {
+                    try {
+                        ClassNode cn = new ClassNode();
+                        ClassReader cr = new ClassReader(bytes);
+                        cr.accept(cn, ClassReader.EXPAND_FRAMES);
+                        ownClasses.put(cn.name, cn);
+                    } catch (Exception ex) {
+                        LOG.warn("Failed to parse class {}: {}", entryName, ex.getMessage());
+                    }
+                } else {
+                    // Skip manifest and signature files
+                    if (!entryName.startsWith("META-INF/") || 
+                        (!entryName.endsWith(".SF") && !entryName.endsWith(".DSA") && !entryName.endsWith(".RSA"))) {
+                        resources.put(entryName, bytes);
+                    }
+                }
+            }
+        }
+        LOG.info("Loaded {} classes and {} resources from {}", ownClasses.size(), resources.size(), jar);
+    }
+
+    public void loadLibrary(Path lib) throws IOException {
+        LOG.info("Loading library: {}", lib);
+        try (JarFile jf = new JarFile(lib.toFile())) {
+            for (JarEntry e : Collections.list(jf.entries())) {
+                if (e.isDirectory()) continue;
+                byte[] bytes = jf.getInputStream(e).readAllBytes();
+                String entryName = e.getName();
+                
+                if (entryName.endsWith(".class")) {
+                    try {
+                        ClassNode cn = new ClassNode();
+                        ClassReader cr = new ClassReader(bytes);
+                        cr.accept(cn, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG);
+                        libClasses.put(cn.name, cn);
+                    } catch (Exception ex) {
+                        LOG.debug("Failed to parse library class {}: {}", entryName, ex.getMessage());
+                    }
+                }
+            }
+        }
+        LOG.info("Loaded {} library classes from {}", libClasses.size(), lib);
+    }
+
+    public void injectRuntimeClass(ClassNode cn) {
+        runtimeInjected.put(cn.name, cn);
+        LOG.debug("Injected runtime class: {}", cn.name);
+    }
+
+    public boolean hasClass(String internalName) {
+        return ownClasses.containsKey(internalName) || libClasses.containsKey(internalName);
+    }
+
+    public ClassNode getClassNode(String internalName) {
+        ClassNode cn = ownClasses.get(internalName);
+        if (cn == null) cn = libClasses.get(internalName);
+        return cn;
+    }
+
+    public Collection<ClassNode> getOwnClasses() {
+        return ownClasses.values();
+    }
+
+    public Collection<ClassNode> getLibClasses() {
+        return libClasses.values();
+    }
+
+    public Map<String, byte[]> getResources() {
+        return resources;
+    }
+
+    public Collection<ClassNode> getAllClasses() {
+        List<ClassNode> all = new ArrayList<>();
+        all.addAll(ownClasses.values());
+        all.addAll(runtimeInjected.values());
+        return all;
+    }
+
+    public byte[] writeClass(ClassNode cn) {
+        org.objectweb.asm.ClassWriter cw = new org.objectweb.asm.ClassWriter(
+            org.objectweb.asm.ClassWriter.COMPUTE_FRAMES);
+        cn.accept(cw);
+        return cw.toByteArray();
+    }
+
+    public void writeJar(Path output) throws IOException {
+        LOG.info("Writing output JAR: {}", output);
+        Files.createDirectories(output.getParent());
+        
+        try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(output))) {
+            // Write obfuscated own classes
+            for (Map.Entry<String, ClassNode> entry : ownClasses.entrySet()) {
+                ClassNode cn = entry.getValue();
+                byte[] bytes = writeClass(cn);
+                JarEntry je = new JarEntry(cn.name + ".class");
+                je.setTime(System.currentTimeMillis());
+                jos.putNextEntry(je);
+                jos.write(bytes);
+                jos.closeEntry();
+            }
+
+            // Write runtime injected classes
+            for (Map.Entry<String, ClassNode> entry : runtimeInjected.entrySet()) {
+                ClassNode cn = entry.getValue();
+                byte[] bytes = writeClass(cn);
+                JarEntry je = new JarEntry(cn.name + ".class");
+                je.setTime(System.currentTimeMillis());
+                jos.putNextEntry(je);
+                jos.write(bytes);
+                jos.closeEntry();
+            }
+
+            // Write resources
+            for (Map.Entry<String, byte[]> entry : resources.entrySet()) {
+                JarEntry je = new JarEntry(entry.getKey());
+                je.setTime(System.currentTimeMillis());
+                jos.putNextEntry(je);
+                jos.write(entry.getValue());
+                jos.closeEntry();
+            }
+        }
+        LOG.info("Output JAR written successfully");
+    }
+}

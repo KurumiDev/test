@@ -1,0 +1,9 @@
+```
+# Build artifacts
+target/
+**/target/
+
+# Dependencies
+.mvn/
+mvn/
+```
