@@ -7,6 +7,7 @@ import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.transformers.AccessFlagObfuscator;
 import dev.kurumi.obfuscator.transformers.BlobStringTransformer;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
+import dev.kurumi.obfuscator.transformers.CfgFlattenTransformer;
 import dev.kurumi.obfuscator.transformers.ClassExploderTransformer;
 import dev.kurumi.obfuscator.transformers.ClassLiteralTransformer;
 import dev.kurumi.obfuscator.transformers.EncryptedClassVaultTransformer;
@@ -77,6 +78,19 @@ public class TransformerPipeline {
 
         // 6b. String encryption (sees every remaining LDC string)
         transformers.add(new StringEncryptionTransformer());
+
+        // 4.5 CFG flattening: turn eligible methods into
+        //      while(true) switch(state) { ... } BEFORE any transformer
+        //      that adds TryCatchBlockNodes. Running earlier means we
+        //      flatten clean methods, and later passes decorate the
+        //      flattened blocks with opaque predicates, junk code,
+        //      invokedynamic wraps, etc. — so the dispatch switch ends
+        //      up packed with load-bearing obfuscated content. Placed
+        //      after string passes so LDC rewriters still see the
+        //      original linear form; placed before bogus-exception /
+        //      flow-obfuscation / opaque-predicates so their tryCatch
+        //      insertions don't disqualify the method from flattening.
+        transformers.add(new CfgFlattenTransformer());
 
         // 5. Bogus exception wrapping (lightweight flow distortion)
         transformers.add(new BogusExceptionTransformer());

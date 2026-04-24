@@ -1,0 +1,398 @@
+package dev.kurumi.obfuscator.transformers;
+
+import dev.kurumi.obfuscator.core.ClassPool;
+import dev.kurumi.obfuscator.core.ObfuscatorContext;
+import dev.kurumi.obfuscator.core.Transformer;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FrameNode;
+import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.IntInsnNode;
+import org.objectweb.asm.tree.JumpInsnNode;
+import org.objectweb.asm.tree.LabelNode;
+import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.LineNumberNode;
+import org.objectweb.asm.tree.LocalVariableNode;
+import org.objectweb.asm.tree.LookupSwitchInsnNode;
+import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TableSwitchInsnNode;
+import org.objectweb.asm.tree.VarInsnNode;
+import org.objectweb.asm.tree.analysis.Analyzer;
+import org.objectweb.asm.tree.analysis.AnalyzerException;
+import org.objectweb.asm.tree.analysis.BasicInterpreter;
+import org.objectweb.asm.tree.analysis.BasicValue;
+import org.objectweb.asm.tree.analysis.Frame;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+
+/**
+ * Control-flow-graph flattening: rewrites each eligible method as a
+ * {@code while(true) switch(state) {...}} dispatch loop. Linear order of
+ * instructions in the bytecode no longer mirrors execution order, and the
+ * dispatch value for the next basic block is a per-method randomized
+ * integer rather than an obvious 0..N-1 sequence.
+ *
+ * <p>Decompilers (CFR, Fernflower, Procyon) and LLM-style reasoners have to
+ * symbolically execute the switch to reconstruct the original control flow.
+ * For methods with branches, this is expensive and often produces
+ * labeled-loop / unreachable-block noise in the output.
+ *
+ * <h3>Safety</h3>
+ * Flattening runs only on methods that pass every one of these checks:
+ * <ul>
+ *   <li>not {@code <init>} / {@code <clinit>} / synthetic decoder</li>
+ *   <li>no try/catch handlers (relocating chunks across handler ranges
+ *       would require rewriting every TryCatchBlockNode)</li>
+ *   <li>no MONITORENTER/MONITOREXIT (moving chunks out of the monitor
+ *       region is unsafe)</li>
+ *   <li>ASM BasicInterpreter-derived frames show every branch target
+ *       sits at a stack-empty point (so we can safely relocate the
+ *       target into its own switch-case block)</li>
+ *   <li>not abstract / native / too small</li>
+ * </ul>
+ * Any method that fails any of the above is left unchanged. That is:
+ * <b>CFG flattening is strictly additive</b> &mdash; it never degrades
+ * correctness, only skips unsafe candidates.
+ */
+public class CfgFlattenTransformer implements Transformer {
+
+    private static final Logger log = LoggerFactory.getLogger(CfgFlattenTransformer.class);
+
+    private static final int MIN_INSNS = 12;   // don't bother with tiny methods
+    private static final int MIN_BLOCKS = 3;   // and those with <3 basic blocks
+
+    @Override
+    public String name() {
+        return "cfg-flatten";
+    }
+
+    @Override
+    public boolean isEnabled(dev.kurumi.obfuscator.config.ObfuscatorConfig config) {
+        return config.isTransformerEnabled("cfg-flatten");
+    }
+
+    @Override
+    public void transform(ClassPool pool, ObfuscatorContext ctx) {
+        int flattened = 0;
+        int skipped = 0;
+        for (ClassNode cn : pool.allClassNodes()) {
+            if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
+            for (MethodNode mn : cn.methods) {
+                if (!eligible(mn)) { continue; }
+                try {
+                    if (flatten(cn, mn)) {
+                        flattened++;
+                    } else {
+                        skipped++;
+                    }
+                } catch (Throwable t) {
+                    // Paranoid fallback: flatten() never mutates
+                    // mn.instructions until its very last step, so a
+                    // mid-flight exception here leaves the method
+                    // untouched and we just record the skip.
+                    skipped++;
+                    log.debug("cfg-flatten: bailed on {}.{}: {}", cn.name, mn.name, t.toString());
+                }
+            }
+        }
+        log.info("CFG-flattened {} methods (skipped {})", flattened, skipped);
+    }
+
+    private static boolean eligible(MethodNode mn) {
+        if (mn.name.startsWith("<")) return false;
+        if (mn.name.startsWith("$obf")) return false;
+        if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) return false;
+        if (mn.instructions == null || mn.instructions.size() < MIN_INSNS) return false;
+        if (mn.tryCatchBlocks != null && !mn.tryCatchBlocks.isEmpty()) return false;
+        for (AbstractInsnNode insn = mn.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            int op = insn.getOpcode();
+            if (op == Opcodes.MONITORENTER || op == Opcodes.MONITOREXIT) return false;
+            if (op == Opcodes.JSR || op == Opcodes.RET) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Actually rewrites {@code mn.instructions}. Returns {@code true} on
+     * successful flattening, {@code false} if we decided mid-flight to
+     * bail (leaves the method unchanged).
+     */
+    private boolean flatten(ClassNode cn, MethodNode mn) throws AnalyzerException {
+        // --- 1. Compute frames so we know which instructions are
+        //        stack-empty. Any jump target that is NOT stack-empty
+        //        cannot safely be moved into its own switch case.
+        //        Earlier passes may have inflated the actual stack use
+        //        without updating mn.maxStack (the final ClassWriter
+        //        recomputes it via COMPUTE_MAXS). Temporarily set a
+        //        generous bound so the Analyzer doesn't abort.
+        int savedMaxStack = mn.maxStack;
+        mn.maxStack = Math.max(mn.maxStack, 256);
+        Analyzer<BasicValue> analyzer = new Analyzer<>(new BasicInterpreter());
+        Frame<BasicValue>[] frames;
+        try {
+            frames = analyzer.analyze(cn.name, mn);
+        } finally {
+            mn.maxStack = savedMaxStack;
+        }
+
+        InsnList insns = mn.instructions;
+
+        // Collect jump targets used anywhere in the method.
+        Set<LabelNode> jumpTargets = new HashSet<>();
+        for (AbstractInsnNode insn = insns.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn instanceof JumpInsnNode jin) {
+                jumpTargets.add(jin.label);
+            } else if (insn instanceof TableSwitchInsnNode ts) {
+                if (ts.dflt != null) jumpTargets.add(ts.dflt);
+                if (ts.labels != null) jumpTargets.addAll(ts.labels);
+            } else if (insn instanceof LookupSwitchInsnNode ls) {
+                if (ls.dflt != null) jumpTargets.add(ls.dflt);
+                if (ls.labels != null) jumpTargets.addAll(ls.labels);
+            }
+        }
+
+        // Map label -> its instruction index.
+        // If any jump target is at a non-stack-empty frame, bail.
+        Map<LabelNode, Integer> labelToIdx = new HashMap<>();
+        for (int i = 0; i < insns.size(); i++) {
+            AbstractInsnNode a = insns.get(i);
+            if (a instanceof LabelNode ln) labelToIdx.put(ln, i);
+        }
+        for (LabelNode t : jumpTargets) {
+            Integer idx = labelToIdx.get(t);
+            if (idx == null) { log.debug("bail {}.{}: jump target label missing", cn.name, mn.name); return false; }
+            // Frames are attached to "real" instructions. Labels themselves
+            // don't carry a frame, so inspect the next real instruction.
+            int probe = idx;
+            while (probe < insns.size() - 1 && frames[probe] == null) probe++;
+            Frame<BasicValue> f = frames[probe];
+            if (f == null) continue; // unreachable
+            if (f.getStackSize() != 0) {
+                log.debug("bail {}.{}: jump target at stack-size {}", cn.name, mn.name, f.getStackSize());
+                return false;
+            }
+        }
+
+        // --- 2. Split the instruction list into basic blocks whose
+        //        starts are either (a) the first real instruction, or
+        //        (b) any stack-empty jump target.
+        List<Block> blocks = new ArrayList<>();
+        Block current = new Block();
+        current.startLabel = null;
+        current.startIndex = 0;
+        for (int i = 0; i < insns.size(); i++) {
+            AbstractInsnNode a = insns.get(i);
+            if (a instanceof LabelNode ln && jumpTargets.contains(ln)) {
+                if (i == 0) {
+                    current.startLabel = ln;
+                    continue;
+                }
+                current.endIndexExclusive = i;
+                blocks.add(current);
+                current = new Block();
+                current.startLabel = ln;
+                current.startIndex = i;
+            }
+        }
+        current.endIndexExclusive = insns.size();
+        blocks.add(current);
+
+        if (blocks.size() < MIN_BLOCKS) return false;
+
+        // --- 3. Give each block a random state id and a fresh LabelNode.
+        long seed = stableSeed(cn.name + "." + mn.name + mn.desc);
+        Random rng = new Random(seed);
+        Set<Integer> usedIds = new HashSet<>();
+        int[] stateId = new int[blocks.size()];
+        LabelNode[] blockLabel = new LabelNode[blocks.size()];
+        for (int i = 0; i < blocks.size(); i++) {
+            int id;
+            do {
+                id = rng.nextInt(0x3FFFFFFF);
+            } while (!usedIds.add(id));
+            stateId[i] = id;
+            blockLabel[i] = new LabelNode();
+        }
+        // Remember original start labels so intra-method jumps can be
+        // retargeted to the block's new label. We also build a label
+        // clone map for AbstractInsnNode.clone() so jumps in cloned
+        // instructions still resolve sensibly (cloned jumps pointing
+        // at a known block start land on blockLabel[i]; unknown labels
+        // map to themselves, which should never happen because we
+        // validated all jump targets above).
+        Map<LabelNode, Integer> startLabelToBlock = new HashMap<>();
+        Map<LabelNode, LabelNode> labelCloneMap = new HashMap<>();
+        for (int i = 0; i < blocks.size(); i++) {
+            if (blocks.get(i).startLabel != null) {
+                startLabelToBlock.put(blocks.get(i).startLabel, i);
+                labelCloneMap.put(blocks.get(i).startLabel, blockLabel[i]);
+            }
+        }
+
+        // State variable slot: first unused local after method args.
+        int stateVar = Math.max(mn.maxLocals, computeInitialLocals(mn));
+        int newMaxLocals = stateVar + 1;
+
+        // --- 4. Build the flat body.
+        LabelNode loopStart = new LabelNode();
+        LabelNode defaultLabel = new LabelNode();
+
+        InsnList out = new InsnList();
+        // entry: state = id of block 0
+        pushInt(out, stateId[0]);
+        out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
+        out.add(loopStart);
+        out.add(new VarInsnNode(Opcodes.ILOAD, stateVar));
+        // Build LOOKUPSWITCH entries sorted by key (JVM requires this).
+        int[] keys = stateId.clone();
+        Integer[] order = new Integer[keys.length];
+        for (int i = 0; i < keys.length; i++) order[i] = i;
+        java.util.Arrays.sort(order, (a, b) -> Integer.compare(keys[a], keys[b]));
+        int[] sortedKeys = new int[keys.length];
+        LabelNode[] sortedLabels = new LabelNode[keys.length];
+        for (int i = 0; i < keys.length; i++) {
+            sortedKeys[i] = keys[order[i]];
+            sortedLabels[i] = blockLabel[order[i]];
+        }
+        out.add(new LookupSwitchInsnNode(defaultLabel, sortedKeys, sortedLabels));
+
+        // Emit each block.
+        for (int bi = 0; bi < blocks.size(); bi++) {
+            Block b = blocks.get(bi);
+            out.add(blockLabel[bi]);
+
+            // Copy original instructions, rewriting jumps so that jumps
+            // to any known block start become "set state, goto loopStart".
+            // A conditional jump gets an intermediate label just after the
+            // conditional that encodes the "taken" state transition.
+            List<AbstractInsnNode> body = new ArrayList<>();
+            for (int idx = b.startIndex; idx < b.endIndexExclusive; idx++) {
+                body.add(insns.get(idx));
+            }
+            boolean endsWithTerminator = false;
+            for (int k = 0; k < body.size(); k++) {
+                AbstractInsnNode a = body.get(k);
+                // Drop all LabelNodes: the only semantically significant
+                // ones were jump targets, and we verified every jump
+                // target is at a block start (handled via blockLabel[]).
+                if (a instanceof LabelNode) continue;
+                if (a instanceof FrameNode) continue;
+                if (a instanceof JumpInsnNode jin) {
+                    Integer targetBlock = startLabelToBlock.get(jin.label);
+                    if (targetBlock == null) {
+                        // A jump to a label that isn't a block boundary
+                        // (shouldn't happen because we validated above).
+                        // Refuse the whole method to stay safe.
+                        return false;
+                    }
+                    if (jin.getOpcode() == Opcodes.GOTO) {
+                        pushInt(out, stateId[targetBlock]);
+                        out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
+                        out.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+                        endsWithTerminator = true;
+                    } else {
+                        LabelNode trampoline = new LabelNode();
+                        LabelNode after = new LabelNode();
+                        out.add(new JumpInsnNode(jin.getOpcode(), trampoline));
+                        out.add(new JumpInsnNode(Opcodes.GOTO, after));
+                        out.add(trampoline);
+                        pushInt(out, stateId[targetBlock]);
+                        out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
+                        out.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+                        out.add(after);
+                    }
+                } else if (a instanceof TableSwitchInsnNode || a instanceof LookupSwitchInsnNode) {
+                    // Rewriting indexed switches as per-branch state
+                    // transitions needs a label-clone map; not worth it
+                    // for the rare methods that contain one. Refuse.
+                    return false;
+                } else if (isReturn(a) || a.getOpcode() == Opcodes.ATHROW) {
+                    out.add(a.clone(labelCloneMap));
+                    endsWithTerminator = true;
+                } else if (a instanceof LineNumberNode) {
+                    continue;
+                } else {
+                    out.add(a.clone(labelCloneMap));
+                }
+            }
+            // Fall-through to next block -> set its state and goto loopStart.
+            if (!endsWithTerminator) {
+                int next = bi + 1;
+                if (next < blocks.size()) {
+                    pushInt(out, stateId[next]);
+                    out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
+                    out.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+                } else {
+                    // Fall off the end — shouldn't happen in valid bytecode,
+                    // but if it does, throw to keep the verifier happy.
+                    out.add(new InsnNode(Opcodes.ACONST_NULL));
+                    out.add(new InsnNode(Opcodes.ATHROW));
+                }
+            }
+        }
+
+        // Default switch branch: throw. Reached only if the state var
+        // is corrupted at runtime, which in practice never happens.
+        out.add(defaultLabel);
+        out.add(new InsnNode(Opcodes.ACONST_NULL));
+        out.add(new InsnNode(Opcodes.ATHROW));
+
+        // --- 5. Swap the instruction list in.
+        mn.instructions = out;
+        mn.maxLocals = newMaxLocals;
+        mn.localVariables = null;          // existing ranges are now invalid
+        mn.maxStack = Math.max(mn.maxStack, 2);
+        return true;
+    }
+
+    /** Integer push helper that picks the most compact encoding. */
+    private static void pushInt(InsnList out, int v) {
+        if (v >= -1 && v <= 5) {
+            out.add(new InsnNode(Opcodes.ICONST_0 + v));
+        } else if (v >= Byte.MIN_VALUE && v <= Byte.MAX_VALUE) {
+            out.add(new IntInsnNode(Opcodes.BIPUSH, v));
+        } else if (v >= Short.MIN_VALUE && v <= Short.MAX_VALUE) {
+            out.add(new IntInsnNode(Opcodes.SIPUSH, v));
+        } else {
+            out.add(new LdcInsnNode(Integer.valueOf(v)));
+        }
+    }
+
+    private static boolean isReturn(AbstractInsnNode a) {
+        int op = a.getOpcode();
+        return op == Opcodes.RETURN || op == Opcodes.IRETURN || op == Opcodes.LRETURN
+                || op == Opcodes.FRETURN || op == Opcodes.DRETURN || op == Opcodes.ARETURN;
+    }
+
+    private static int computeInitialLocals(MethodNode mn) {
+        int slots = 0;
+        if ((mn.access & Opcodes.ACC_STATIC) == 0) slots++;
+        for (Type t : Type.getArgumentTypes(mn.desc)) slots += t.getSize();
+        return slots;
+    }
+
+    private static long stableSeed(String s) {
+        long h = 1125899906842597L;
+        for (int i = 0; i < s.length(); i++) {
+            h = 31 * h + s.charAt(i);
+        }
+        return h;
+    }
+
+    private static final class Block {
+        LabelNode startLabel;
+        int startIndex;
+        int endIndexExclusive;
+    }
+}
