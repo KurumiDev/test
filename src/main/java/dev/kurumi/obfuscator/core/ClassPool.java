@@ -117,6 +117,15 @@ public class ClassPool {
         classNodes.put(cn.name, cn);
     }
 
+    /**
+     * Remove a class from the owned pool. Returns the evicted node or
+     * {@code null} if the name was unknown. Used by transformers that
+     * move class bodies into encrypted payloads.
+     */
+    public ClassNode removeClass(String internalName) {
+        return classNodes.remove(internalName);
+    }
+
     public int size() {
         return classNodes.size();
     }

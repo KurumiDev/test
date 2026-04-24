@@ -7,10 +7,14 @@ import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.transformers.AccessFlagObfuscator;
 import dev.kurumi.obfuscator.transformers.BlobStringTransformer;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
+import dev.kurumi.obfuscator.transformers.CfgFlattenTransformer;
 import dev.kurumi.obfuscator.transformers.ClassExploderTransformer;
 import dev.kurumi.obfuscator.transformers.ClassLiteralTransformer;
+import dev.kurumi.obfuscator.transformers.EncryptedClassVaultTransformer;
+import dev.kurumi.obfuscator.transformers.FakeAnnotationTransformer;
 import dev.kurumi.obfuscator.transformers.FlowObfuscationTransformer;
 import dev.kurumi.obfuscator.transformers.IndyCallTransformer;
+import dev.kurumi.obfuscator.transformers.IndyFieldTransformer;
 import dev.kurumi.obfuscator.transformers.InvokeDynamicTransformer;
 import dev.kurumi.obfuscator.transformers.JunkCodeInjector;
 import dev.kurumi.obfuscator.transformers.LocalVariableTableObfuscator;
@@ -76,6 +80,19 @@ public class TransformerPipeline {
         // 6b. String encryption (sees every remaining LDC string)
         transformers.add(new StringEncryptionTransformer());
 
+        // 4.5 CFG flattening: turn eligible methods into
+        //      while(true) switch(state) { ... } BEFORE any transformer
+        //      that adds TryCatchBlockNodes. Running earlier means we
+        //      flatten clean methods, and later passes decorate the
+        //      flattened blocks with opaque predicates, junk code,
+        //      invokedynamic wraps, etc. — so the dispatch switch ends
+        //      up packed with load-bearing obfuscated content. Placed
+        //      after string passes so LDC rewriters still see the
+        //      original linear form; placed before bogus-exception /
+        //      flow-obfuscation / opaque-predicates so their tryCatch
+        //      insertions don't disqualify the method from flattening.
+        transformers.add(new CfgFlattenTransformer());
+
         // 5. Bogus exception wrapping (lightweight flow distortion)
         transformers.add(new BogusExceptionTransformer());
 
@@ -95,6 +112,19 @@ public class TransformerPipeline {
         // 9. Indy-call wrapping for cross-pool method calls
         transformers.add(new IndyCallTransformer());
 
+        // 9b. Indy-field wrapping for cross-pool GETFIELD/PUTFIELD/GETSTATIC/PUTSTATIC.
+        //      Runs after indy-call so the bootstrap/decoder methods emitted
+        //      by indy-call are already present and excluded from wrapping.
+        transformers.add(new IndyFieldTransformer());
+
+        // 10b. Fake annotation injection: class/method/field-level
+        //      misleading metadata (fake @Generated, @License,
+        //      @AntiCheat, @SecurityReview). Runs AFTER the bytecode
+        //      mutation passes so the injected annotations survive
+        //      verify-after-each; runs BEFORE access-flags /
+        //      member-shuffler so the shuffle sees the final metadata.
+        transformers.add(new FakeAnnotationTransformer());
+
         // 11. Cosmetic: access flags, member order, source attributes
         transformers.add(new AccessFlagObfuscator());
         transformers.add(new MemberShufflerTransformer());
@@ -105,6 +135,13 @@ public class TransformerPipeline {
 
         // 13. Synthetic LocalVariableTable with confusing names (after strip)
         transformers.add(new LocalVariableTableObfuscator());
+
+        // 14. Final pass: pull selected exploder workers out of the JAR into
+        //      encrypted per-package vaults. Must run LAST so it encrypts
+        //      each worker's fully-obfuscated form (indy-call, indy-field,
+        //      blob-strings, polymorphic decoder, confusing locals, all
+        //      already applied).
+        transformers.add(new EncryptedClassVaultTransformer());
     }
 
     public void execute(ClassPool pool, ObfuscatorContext ctx) {

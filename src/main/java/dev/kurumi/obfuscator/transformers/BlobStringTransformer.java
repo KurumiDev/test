@@ -145,7 +145,8 @@ public class BlobStringTransformer implements Transformer {
         int literalSeed = seedFor(cn.name);
         int classNameHash = cn.name.replace('/', '.').hashCode();
         int effectiveSeed = literalSeed ^ classNameHash;
-        byte[] enc = encrypt(raw, effectiveSeed);
+        int variant = DecoderPolymorphism.variantFor(cn.name);
+        byte[] enc = encrypt(raw, effectiveSeed, variant);
         String encB64 = Base64.getEncoder().encodeToString(enc);
 
         // Phase 3: inject fields.
@@ -172,7 +173,7 @@ public class BlobStringTransformer implements Transformer {
         // value tied to the enclosing class's identity via
         // MethodHandles.lookup().lookupClass().getName().hashCode().
         if (!hasMethod(cn, helper, "([BI)[B")) {
-            cn.methods.add(buildHelper(cn, helper));
+            cn.methods.add(buildHelper(cn, helper, variant));
         }
         injectClinitPrefix(cn, encB64, offsets, literalSeed, blobField, offsetsField,
                 cacheField, helper);
@@ -237,14 +238,8 @@ public class BlobStringTransformer implements Transformer {
         return h | 1;
     }
 
-    private static byte[] encrypt(byte[] raw, int seed) {
-        byte[] out = new byte[raw.length];
-        int k = seed;
-        for (int i = 0; i < raw.length; i++) {
-            out[i] = (byte) (raw[i] ^ ((k ^ (i * 0x9E3779B9)) & 0xFF));
-            k = k * 0x45D9F3B + 0x119DE1F3;
-        }
-        return out;
+    private static byte[] encrypt(byte[] raw, int seed, int variant) {
+        return DecoderPolymorphism.xorByteStream(raw, seed, variant);
     }
 
     private static AbstractInsnNode loadInt(int v) {
@@ -376,12 +371,12 @@ public class BlobStringTransformer implements Transformer {
      * }
      * </pre>
      */
-    private MethodNode buildHelper(ClassNode cn, String helper) {
+    private MethodNode buildHelper(ClassNode cn, String helper, int variant) {
         MethodNode m = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
                 helper, "([BI)[B", null, null);
 
-        // Locals: 0=enc, 1=seed(k), 2=out, 3=i
+        // Locals: 0=enc, 1=k, 2=out, 3=i, 4=plain(int)
         InsnList il = m.instructions;
 
         // byte[] out = new byte[enc.length];
@@ -402,30 +397,25 @@ public class BlobStringTransformer implements Transformer {
         il.add(new InsnNode(Opcodes.ARRAYLENGTH));
         il.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
-        // out[i] = enc[i] ^ ((k ^ (i * 0x9E3779B9)) & 0xFF)
-        il.add(new VarInsnNode(Opcodes.ALOAD, 2));
-        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        // plain = (enc[i] & 0xFF) ^ mask(k, i)
         il.add(new VarInsnNode(Opcodes.ALOAD, 0));
         il.add(new VarInsnNode(Opcodes.ILOAD, 3));
         il.add(new InsnNode(Opcodes.BALOAD));
-        il.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
-        il.add(new LdcInsnNode(Integer.valueOf(0x9E3779B9)));
-        il.add(new InsnNode(Opcodes.IMUL));
-        il.add(new InsnNode(Opcodes.IXOR));
         il.add(new IntInsnNode(Opcodes.SIPUSH, 0xFF));
         il.add(new InsnNode(Opcodes.IAND));
+        DecoderPolymorphism.emitMask(il, 1, 3, variant);
         il.add(new InsnNode(Opcodes.IXOR));
+        il.add(new VarInsnNode(Opcodes.ISTORE, 4));
+
+        // out[i] = (byte) plain
+        il.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        il.add(new VarInsnNode(Opcodes.ILOAD, 4));
         il.add(new InsnNode(Opcodes.I2B));
         il.add(new InsnNode(Opcodes.BASTORE));
 
-        // k = k * 0x45D9F3B + 0x119DE1F3;
-        il.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        il.add(new LdcInsnNode(Integer.valueOf(0x45D9F3B)));
-        il.add(new InsnNode(Opcodes.IMUL));
-        il.add(new LdcInsnNode(Integer.valueOf(0x119DE1F3)));
-        il.add(new InsnNode(Opcodes.IADD));
-        il.add(new VarInsnNode(Opcodes.ISTORE, 1));
+        // variant-specific k update (slot 1 = k, slot 3 = i, slot 4 = plain)
+        DecoderPolymorphism.emitKeyUpdate(il, 1, 3, 4, variant);
 
         il.add(new IincInsnNode(3, 1));
         il.add(new JumpInsnNode(Opcodes.GOTO, loop));
@@ -434,8 +424,8 @@ public class BlobStringTransformer implements Transformer {
         il.add(new VarInsnNode(Opcodes.ALOAD, 2));
         il.add(new InsnNode(Opcodes.ARETURN));
 
-        m.maxLocals = 4;
-        m.maxStack = 6;
+        m.maxLocals = 5;
+        m.maxStack = 5;
         return m;
     }
 

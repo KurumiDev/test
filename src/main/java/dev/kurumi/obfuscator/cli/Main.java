@@ -144,6 +144,10 @@ public class Main implements Callable<Integer> {
         b.localVarTableEnabled = loaded.isTransformerEnabled("local-variable-table");
         b.localVarEnabled = loaded.isTransformerEnabled("local-variable");
         b.classExplodeEnabled = loaded.isTransformerEnabled("class-explode");
+        b.indyFieldEnabled = loaded.isTransformerEnabled("indy-field");
+        b.encryptedClassVaultEnabled = loaded.isTransformerEnabled("encrypted-class-vault");
+        b.cfgFlattenEnabled = loaded.isTransformerEnabled("cfg-flatten");
+        b.fakeAnnotationsEnabled = loaded.isTransformerEnabled("fake-annotations");
         return b;
     }
 

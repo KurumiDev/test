@@ -58,6 +58,7 @@ public class ObfuscatorConfig {
     private final boolean classLiteralEnabled;
     private final boolean stringConcatEnabled;
     private final boolean indyCallEnabled;
+    private final boolean indyFieldEnabled;
     private final boolean junkCodeEnabled;
     private final boolean accessFlagsEnabled;
     private final boolean memberShufflerEnabled;
@@ -65,6 +66,9 @@ public class ObfuscatorConfig {
     private final boolean blobStringEnabled;
     private final boolean localVarTableEnabled;
     private final boolean classExplodeEnabled;
+    private final boolean encryptedClassVaultEnabled;
+    private final boolean cfgFlattenEnabled;
+    private final boolean fakeAnnotationsEnabled;
 
     private final boolean localVarEnabled;
 
@@ -102,6 +106,7 @@ public class ObfuscatorConfig {
         this.classLiteralEnabled = b.classLiteralEnabled;
         this.stringConcatEnabled = b.stringConcatEnabled;
         this.indyCallEnabled = b.indyCallEnabled;
+        this.indyFieldEnabled = b.indyFieldEnabled;
         this.junkCodeEnabled = b.junkCodeEnabled;
         this.accessFlagsEnabled = b.accessFlagsEnabled;
         this.memberShufflerEnabled = b.memberShufflerEnabled;
@@ -109,6 +114,9 @@ public class ObfuscatorConfig {
         this.blobStringEnabled = b.blobStringEnabled;
         this.localVarTableEnabled = b.localVarTableEnabled;
         this.classExplodeEnabled = b.classExplodeEnabled;
+        this.encryptedClassVaultEnabled = b.encryptedClassVaultEnabled;
+        this.cfgFlattenEnabled = b.cfgFlattenEnabled;
+        this.fakeAnnotationsEnabled = b.fakeAnnotationsEnabled;
         this.localVarEnabled = b.localVarEnabled;
         this.exemptions = List.copyOf(b.exemptions);
         this.autoExempt = b.autoExempt;
@@ -162,6 +170,7 @@ public class ObfuscatorConfig {
         if (c.hasPath("transformers.class-literal.enabled")) b.classLiteralEnabled = c.getBoolean("transformers.class-literal.enabled");
         if (c.hasPath("transformers.string-concat.enabled")) b.stringConcatEnabled = c.getBoolean("transformers.string-concat.enabled");
         if (c.hasPath("transformers.indy-call.enabled")) b.indyCallEnabled = c.getBoolean("transformers.indy-call.enabled");
+        if (c.hasPath("transformers.indy-field.enabled")) b.indyFieldEnabled = c.getBoolean("transformers.indy-field.enabled");
         if (c.hasPath("transformers.junk-code.enabled")) b.junkCodeEnabled = c.getBoolean("transformers.junk-code.enabled");
         if (c.hasPath("transformers.access-flags.enabled")) b.accessFlagsEnabled = c.getBoolean("transformers.access-flags.enabled");
         if (c.hasPath("transformers.member-shuffler.enabled")) b.memberShufflerEnabled = c.getBoolean("transformers.member-shuffler.enabled");
@@ -169,6 +178,9 @@ public class ObfuscatorConfig {
         if (c.hasPath("transformers.blob-string.enabled")) b.blobStringEnabled = c.getBoolean("transformers.blob-string.enabled");
         if (c.hasPath("transformers.local-variable-table.enabled")) b.localVarTableEnabled = c.getBoolean("transformers.local-variable-table.enabled");
         if (c.hasPath("transformers.class-explode.enabled")) b.classExplodeEnabled = c.getBoolean("transformers.class-explode.enabled");
+        if (c.hasPath("transformers.encrypted-class-vault.enabled")) b.encryptedClassVaultEnabled = c.getBoolean("transformers.encrypted-class-vault.enabled");
+        if (c.hasPath("transformers.cfg-flatten.enabled")) b.cfgFlattenEnabled = c.getBoolean("transformers.cfg-flatten.enabled");
+        if (c.hasPath("transformers.fake-annotations.enabled")) b.fakeAnnotationsEnabled = c.getBoolean("transformers.fake-annotations.enabled");
 
         if (c.hasPath("transformers.local-variable.enabled")) b.localVarEnabled = c.getBoolean("transformers.local-variable.enabled");
 
@@ -230,6 +242,7 @@ public class ObfuscatorConfig {
             case "class-literal" -> classLiteralEnabled;
             case "string-concat" -> stringConcatEnabled;
             case "indy-call" -> indyCallEnabled;
+            case "indy-field" -> indyFieldEnabled;
             case "junk-code" -> junkCodeEnabled;
             case "access-flags" -> accessFlagsEnabled;
             case "member-shuffler" -> memberShufflerEnabled;
@@ -238,6 +251,9 @@ public class ObfuscatorConfig {
             case "local-variable-table" -> localVarTableEnabled;
             case "local-variable" -> localVarEnabled;
             case "class-explode" -> classExplodeEnabled;
+            case "encrypted-class-vault" -> encryptedClassVaultEnabled;
+            case "cfg-flatten" -> cfgFlattenEnabled;
+            case "fake-annotations" -> fakeAnnotationsEnabled;
             default -> true;
         };
     }
@@ -276,6 +292,7 @@ public class ObfuscatorConfig {
         public boolean classLiteralEnabled = true;
         public boolean stringConcatEnabled = true;
         public boolean indyCallEnabled = false; // opt-in: heavier but strongest
+        public boolean indyFieldEnabled = false; // opt-in: indy-wraps field access
         public boolean junkCodeEnabled = true;
         public boolean accessFlagsEnabled = true;
         public boolean memberShufflerEnabled = true;
@@ -283,6 +300,9 @@ public class ObfuscatorConfig {
         public boolean blobStringEnabled = false; // opt-in: replaces string-encryption
         public boolean localVarTableEnabled = true;
         public boolean classExplodeEnabled = false; // opt-in: inflates class count
+        public boolean encryptedClassVaultEnabled = false; // opt-in: moves workers into encrypted payloads
+        public boolean cfgFlattenEnabled = false; // opt-in: while(true) switch(state) dispatch
+        public boolean fakeAnnotationsEnabled = false; // opt-in: misleading @Generated/@License/@AntiCheat
 
         public boolean localVarEnabled = true;
 

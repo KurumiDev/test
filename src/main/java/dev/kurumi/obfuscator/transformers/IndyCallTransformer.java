@@ -84,22 +84,34 @@ public class IndyCallTransformer implements Transformer {
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         int rewritten = 0;
         int classesTouched = 0;
+        int[] variantCounts = new int[DecoderPolymorphism.VARIANT_COUNT];
         for (ClassNode cn : pool.allClassNodes()) {
             if ("module-info".equals(cn.name)) continue;
+            // The BSM Handle below is emitted with isInterface=false,
+            // which in an interface class would produce a
+            // CONSTANT_Methodref_info in the constant pool instead of
+            // the CONSTANT_InterfaceMethodRef_info the JVM requires.
+            // That triggers BootstrapMethodError /
+            // IncompatibleClassChangeError at link time. Interfaces
+            // host too few call sites to be worth a second code path,
+            // so we skip them.
+            if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
             String suffix = classSuffix(cn.name);
             String bsmName = BSM_PREFIX + suffix;
             String decName = DEC_PREFIX + suffix;
+            int variant = DecoderPolymorphism.variantFor(cn.name);
             int perClass = 0;
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null || mn.instructions.size() == 0) continue;
                 if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) continue;
                 if (bsmName.equals(mn.name) || decName.equals(mn.name)) continue;
-                perClass += rewriteMethod(cn, mn, pool, bsmName, decName);
+                perClass += rewriteMethod(cn, mn, pool, bsmName, decName, variant);
             }
             if (perClass > 0) {
-                injectBootstrap(cn, bsmName, decName);
+                injectBootstrap(cn, bsmName, decName, variant);
                 classesTouched++;
                 rewritten += perClass;
+                variantCounts[variant]++;
             }
         }
         if (rewritten > 0) {
@@ -110,7 +122,8 @@ public class IndyCallTransformer implements Transformer {
         }
     }
 
-    private int rewriteMethod(ClassNode cn, MethodNode mn, ClassPool pool, String bsmName, String decName) {
+    private int rewriteMethod(ClassNode cn, MethodNode mn, ClassPool pool,
+                              String bsmName, String decName, int variant) {
         List<MethodInsnNode> targets = new ArrayList<>();
         for (AbstractInsnNode insn : mn.instructions.toArray()) {
             if (!(insn instanceof MethodInsnNode min)) continue;
@@ -141,9 +154,9 @@ public class IndyCallTransformer implements Transformer {
                     "m",
                     indyDesc,
                     bsm,
-                    encrypt(min.owner),
-                    encrypt(min.name),
-                    encrypt(min.desc),
+                    encrypt(min.owner, variant),
+                    encrypt(min.name, variant),
+                    encrypt(min.desc, variant),
                     Integer.valueOf(kind)
             );
             mn.instructions.set(min, indy);
@@ -151,25 +164,20 @@ public class IndyCallTransformer implements Transformer {
         return targets.size();
     }
 
-    private static String encrypt(String plaintext) {
+    private static String encrypt(String plaintext, int variant) {
         byte[] src = plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        byte[] out = new byte[src.length];
-        int k = INDY_KEY;
-        for (int i = 0; i < src.length; i++) {
-            out[i] = (byte) (src[i] ^ (k & 0xFF));
-            k = k * 0x45D9F3B + 0x119DE1F3;
-        }
+        byte[] out = DecoderPolymorphism.xorByteStream(src, INDY_KEY, variant);
         return java.util.Base64.getEncoder().encodeToString(out);
     }
 
-    private void injectBootstrap(ClassNode cn, String bsmName, String decName) {
+    private void injectBootstrap(ClassNode cn, String bsmName, String decName, int variant) {
         boolean hasBsm = false;
         boolean hasDec = false;
         for (MethodNode m : cn.methods) {
             if (bsmName.equals(m.name) && BSM_DESC.equals(m.desc)) hasBsm = true;
             if (decName.equals(m.name)) hasDec = true;
         }
-        if (!hasDec) cn.methods.add(buildDecoder(cn, decName));
+        if (!hasDec) cn.methods.add(buildDecoder(cn, decName, variant));
         if (!hasBsm) cn.methods.add(buildBsm(cn, bsmName, decName));
     }
 
@@ -178,7 +186,7 @@ public class IndyCallTransformer implements Transformer {
      * args. Kept separate so COMPUTE_FRAMES can analyze each method without
      * cross-method type dependencies.
      */
-    private MethodNode buildDecoder(ClassNode cn, String decName) {
+    private MethodNode buildDecoder(ClassNode cn, String decName, int variant) {
         MethodNode m = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
                 decName,
@@ -186,26 +194,23 @@ public class IndyCallTransformer implements Transformer {
                 null,
                 null
         );
+        // slots: 0=arg, 1=raw, 2=out, 3=k, 4=i, 5=plain(int)
         InsnList il = m.instructions;
         LabelNode loop = new LabelNode();
         LabelNode loopEnd = new LabelNode();
 
-        // byte[] raw = Base64.getDecoder().decode(arg0)
         il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/util/Base64",
                 "getDecoder", "()Ljava/util/Base64$Decoder;", false));
         il.add(new VarInsnNode(Opcodes.ALOAD, 0));
         il.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/util/Base64$Decoder",
                 "decode", "(Ljava/lang/String;)[B", false));
         il.add(new VarInsnNode(Opcodes.ASTORE, 1));
-        // byte[] out = new byte[raw.length]
         il.add(new VarInsnNode(Opcodes.ALOAD, 1));
         il.add(new InsnNode(Opcodes.ARRAYLENGTH));
         il.add(new IntInsnNode(Opcodes.NEWARRAY, Opcodes.T_BYTE));
         il.add(new VarInsnNode(Opcodes.ASTORE, 2));
-        // int k = INDY_KEY
         il.add(new LdcInsnNode(Integer.valueOf(INDY_KEY)));
         il.add(new VarInsnNode(Opcodes.ISTORE, 3));
-        // int i = 0
         il.add(new InsnNode(Opcodes.ICONST_0));
         il.add(new VarInsnNode(Opcodes.ISTORE, 4));
 
@@ -215,24 +220,25 @@ public class IndyCallTransformer implements Transformer {
         il.add(new InsnNode(Opcodes.ARRAYLENGTH));
         il.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
-        il.add(new VarInsnNode(Opcodes.ALOAD, 2));
-        il.add(new VarInsnNode(Opcodes.ILOAD, 4));
+        // plain = (raw[i] & 0xFF) ^ mask(k, i)
         il.add(new VarInsnNode(Opcodes.ALOAD, 1));
         il.add(new VarInsnNode(Opcodes.ILOAD, 4));
         il.add(new InsnNode(Opcodes.BALOAD));
-        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
         il.add(new IntInsnNode(Opcodes.SIPUSH, 0xFF));
         il.add(new InsnNode(Opcodes.IAND));
+        DecoderPolymorphism.emitMask(il, 3, 4, variant);
         il.add(new InsnNode(Opcodes.IXOR));
+        il.add(new VarInsnNode(Opcodes.ISTORE, 5));
+
+        // out[i] = (byte) plain
+        il.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        il.add(new VarInsnNode(Opcodes.ILOAD, 4));
+        il.add(new VarInsnNode(Opcodes.ILOAD, 5));
         il.add(new InsnNode(Opcodes.I2B));
         il.add(new InsnNode(Opcodes.BASTORE));
 
-        il.add(new VarInsnNode(Opcodes.ILOAD, 3));
-        il.add(new LdcInsnNode(Integer.valueOf(0x45D9F3B)));
-        il.add(new InsnNode(Opcodes.IMUL));
-        il.add(new LdcInsnNode(Integer.valueOf(0x119DE1F3)));
-        il.add(new InsnNode(Opcodes.IADD));
-        il.add(new VarInsnNode(Opcodes.ISTORE, 3));
+        // k = keyUpdate(k, i, plain, variant)
+        DecoderPolymorphism.emitKeyUpdate(il, 3, 4, 5, variant);
 
         il.add(new IincInsnNode(4, 1));
         il.add(new JumpInsnNode(Opcodes.GOTO, loop));
@@ -248,7 +254,7 @@ public class IndyCallTransformer implements Transformer {
                 "<init>", "([BLjava/nio/charset/Charset;)V", false));
         il.add(new InsnNode(Opcodes.ARETURN));
 
-        m.maxLocals = 5;
+        m.maxLocals = 6;
         m.maxStack = 5;
         return m;
     }
