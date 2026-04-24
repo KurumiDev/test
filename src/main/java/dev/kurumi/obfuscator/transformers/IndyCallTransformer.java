@@ -87,6 +87,15 @@ public class IndyCallTransformer implements Transformer {
         int[] variantCounts = new int[DecoderPolymorphism.VARIANT_COUNT];
         for (ClassNode cn : pool.allClassNodes()) {
             if ("module-info".equals(cn.name)) continue;
+            // The BSM Handle below is emitted with isInterface=false,
+            // which in an interface class would produce a
+            // CONSTANT_Methodref_info in the constant pool instead of
+            // the CONSTANT_InterfaceMethodRef_info the JVM requires.
+            // That triggers BootstrapMethodError /
+            // IncompatibleClassChangeError at link time. Interfaces
+            // host too few call sites to be worth a second code path,
+            // so we skip them.
+            if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
             String suffix = classSuffix(cn.name);
             String bsmName = BSM_PREFIX + suffix;
             String decName = DEC_PREFIX + suffix;
