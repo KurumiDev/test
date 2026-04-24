@@ -11,6 +11,7 @@ import dev.kurumi.obfuscator.transformers.CfgFlattenTransformer;
 import dev.kurumi.obfuscator.transformers.ClassExploderTransformer;
 import dev.kurumi.obfuscator.transformers.ClassLiteralTransformer;
 import dev.kurumi.obfuscator.transformers.EncryptedClassVaultTransformer;
+import dev.kurumi.obfuscator.transformers.FakeAnnotationTransformer;
 import dev.kurumi.obfuscator.transformers.FlowObfuscationTransformer;
 import dev.kurumi.obfuscator.transformers.IndyCallTransformer;
 import dev.kurumi.obfuscator.transformers.IndyFieldTransformer;
@@ -115,6 +116,14 @@ public class TransformerPipeline {
         //      Runs after indy-call so the bootstrap/decoder methods emitted
         //      by indy-call are already present and excluded from wrapping.
         transformers.add(new IndyFieldTransformer());
+
+        // 10b. Fake annotation injection: class/method/field-level
+        //      misleading metadata (fake @Generated, @License,
+        //      @AntiCheat, @SecurityReview). Runs AFTER the bytecode
+        //      mutation passes so the injected annotations survive
+        //      verify-after-each; runs BEFORE access-flags /
+        //      member-shuffler so the shuffle sees the final metadata.
+        transformers.add(new FakeAnnotationTransformer());
 
         // 11. Cosmetic: access flags, member order, source attributes
         transformers.add(new AccessFlagObfuscator());
