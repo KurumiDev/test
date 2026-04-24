@@ -122,6 +122,15 @@ public class IndyFieldTransformer implements Transformer {
         int classesTouched = 0;
         for (ClassNode cn : pool.allClassNodes()) {
             if ("module-info".equals(cn.name)) continue;
+            // Interfaces need CONSTANT_InterfaceMethodRef_info for their
+            // method references; we emit H_INVOKESTATIC with
+            // isInterface=false which produces CONSTANT_Methodref_info
+            // and would blow up at link time (BootstrapMethodError /
+            // IncompatibleClassChangeError). Skip them entirely — they
+            // rarely host field-access bytecodes worth rewriting anyway
+            // (only default methods would, and those are cross-referenced
+            // through other rewrites in this pipeline).
+            if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
             String suffix = classSuffix(cn.name);
             String bsmName = BSM_PREFIX + suffix;
             String decName = DEC_PREFIX + suffix;
