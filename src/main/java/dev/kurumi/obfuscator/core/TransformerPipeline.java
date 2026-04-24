@@ -11,6 +11,7 @@ import dev.kurumi.obfuscator.transformers.ClassExploderTransformer;
 import dev.kurumi.obfuscator.transformers.ClassLiteralTransformer;
 import dev.kurumi.obfuscator.transformers.FlowObfuscationTransformer;
 import dev.kurumi.obfuscator.transformers.IndyCallTransformer;
+import dev.kurumi.obfuscator.transformers.IndyFieldTransformer;
 import dev.kurumi.obfuscator.transformers.InvokeDynamicTransformer;
 import dev.kurumi.obfuscator.transformers.JunkCodeInjector;
 import dev.kurumi.obfuscator.transformers.LocalVariableTableObfuscator;
@@ -94,6 +95,11 @@ public class TransformerPipeline {
 
         // 9. Indy-call wrapping for cross-pool method calls
         transformers.add(new IndyCallTransformer());
+
+        // 9b. Indy-field wrapping for cross-pool GETFIELD/PUTFIELD/GETSTATIC/PUTSTATIC.
+        //      Runs after indy-call so the bootstrap/decoder methods emitted
+        //      by indy-call are already present and excluded from wrapping.
+        transformers.add(new IndyFieldTransformer());
 
         // 11. Cosmetic: access flags, member order, source attributes
         transformers.add(new AccessFlagObfuscator());

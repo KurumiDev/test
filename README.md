@@ -134,6 +134,8 @@ transformers {
     opaque-predicates { enabled = true, type = MIXED }
     blob-string { enabled = true }
     indy-call { enabled = true }
+    indy-field { enabled = true }
+    class-explode { enabled = true }
     junk-code { enabled = true }
     access-flags { enabled = true }
     member-shuffler { enabled = true }
