@@ -25,6 +25,7 @@ import org.objectweb.asm.tree.analysis.AnalyzerException;
 import org.objectweb.asm.tree.analysis.BasicInterpreter;
 import org.objectweb.asm.tree.analysis.BasicValue;
 import org.objectweb.asm.tree.analysis.Frame;
+import org.objectweb.asm.tree.analysis.SimpleVerifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -348,12 +349,65 @@ public class CfgFlattenTransformer implements Transformer {
         out.add(new InsnNode(Opcodes.ACONST_NULL));
         out.add(new InsnNode(Opcodes.ATHROW));
 
-        // --- 5. Swap the instruction list in.
+        // --- 5. Swap the instruction list in, then verify the result.
+        //        If the mutated method fails verification (most commonly
+        //        because a local variable live across a jump boundary was
+        //        set up by fall-through in the original code but the
+        //        dispatcher loses that init edge), revert to the original
+        //        so the method stays correct even if unflattened.
+        InsnList savedInsns = mn.instructions;
+        List<LocalVariableNode> savedLVs = mn.localVariables;
+        int savedOuterMaxStack = mn.maxStack;
+        int savedMaxLocals = mn.maxLocals;
+
         mn.instructions = out;
         mn.maxLocals = newMaxLocals;
         mn.localVariables = null;          // existing ranges are now invalid
         mn.maxStack = Math.max(mn.maxStack, 2);
+
+        if (!verifyAfterFlatten(cn, mn)) {
+            log.debug("cfg-flatten: verify failed on {}.{}, reverting", cn.name, mn.name);
+            mn.instructions = savedInsns;
+            mn.localVariables = savedLVs;
+            mn.maxStack = savedOuterMaxStack;
+            mn.maxLocals = savedMaxLocals;
+            return false;
+        }
         return true;
+    }
+
+    /**
+     * Runs a SimpleVerifier on the mutated method and returns true iff
+     * no frame-level type mismatch is detected. SimpleVerifier's type
+     * lattice is much stricter than BasicInterpreter's, so any
+     * "Expected X, but found top" error that would surface in the
+     * final JVM verifier is caught here.
+     */
+    private static boolean verifyAfterFlatten(ClassNode cn, MethodNode mn) {
+        SimpleVerifier sv = new SimpleVerifier(
+                Type.getObjectType(cn.name),
+                cn.superName == null ? null : Type.getObjectType(cn.superName),
+                null,
+                (cn.access & Opcodes.ACC_INTERFACE) != 0);
+        // Use the CONTEXT class loader to resolve types referenced by the
+        // method. SimpleVerifier resolves them via Class.forName — missing
+        // classes raise TypeNotPresentException which we treat as a verify
+        // failure and revert. That is the safe choice for obfuscated
+        // plugins that import runtime-provided APIs (e.g. Bukkit). The
+        // cost is a handful of skipped methods; the benefit is never
+        // emitting bytecode that the actual JVM will reject.
+        sv.setClassLoader(Thread.currentThread().getContextClassLoader());
+        Analyzer<BasicValue> analyzer = new Analyzer<>(sv);
+        int savedMaxStack = mn.maxStack;
+        mn.maxStack = Math.max(mn.maxStack, 256);
+        try {
+            analyzer.analyze(cn.name, mn);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            mn.maxStack = savedMaxStack;
+        }
     }
 
     /** Integer push helper that picks the most compact encoding. */

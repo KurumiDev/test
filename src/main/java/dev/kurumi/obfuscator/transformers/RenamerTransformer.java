@@ -292,9 +292,16 @@ public class RenamerTransformer implements Transformer {
                         if (isJdkAncestor(ancestor)) {
                             if (isJdkObjectMethod(mn.name, mn.desc)) {
                                 exemptGroups.add(selfId);
+                            } else if (jdkAncestorDeclaresMethod(ancestor, mn.name, mn.desc)) {
+                                // Ancestor is a JDK class/interface (Runnable,
+                                // Comparable, Iterable, Callable, Function, …)
+                                // that declares the same virtual method. Keep
+                                // the original name so polymorphic dispatch
+                                // from the JDK side still finds our impl.
+                                exemptGroups.add(selfId);
                             }
-                            // else: we know JDK Object-family classes do not
-                            // declare user method names → safe to skip.
+                            // else: the JDK ancestor does not declare a
+                            // method by that name+desc → safe to rename.
                         } else {
                             // External non-JDK ancestor (platform API we don't
                             // have a library jar for): stay conservative.
@@ -400,6 +407,42 @@ public class RenamerTransformer implements Transformer {
 
     private static boolean isJdkObjectMethod(String name, String desc) {
         return OBJECT_VIRTUAL_SIGNATURES.contains(name + desc);
+    }
+
+    // Memoised (internal ancestor name) -> set of "name+desc" pairs declared
+    // on that JDK class/interface. Computed via reflection at obfuscator
+    // runtime — our obfuscator JAR runs on JDK 17+ so java.lang.Runnable
+    // etc. are always resolvable. Includes inherited methods so that a
+    // chain like TimerTask → Runnable still protects run()V.
+    private static final Map<String, Set<String>> JDK_METHOD_CACHE = new HashMap<>();
+    private static final Set<String> JDK_METHOD_MISS_CACHE = new HashSet<>();
+
+    private static boolean jdkAncestorDeclaresMethod(String internalAncestor, String name, String desc) {
+        String needle = name + desc;
+        Set<String> cached = JDK_METHOD_CACHE.get(internalAncestor);
+        if (cached != null) return cached.contains(needle);
+        if (JDK_METHOD_MISS_CACHE.contains(internalAncestor)) return false;
+        Class<?> cls;
+        try {
+            cls = Class.forName(internalAncestor.replace('/', '.'), false,
+                    Thread.currentThread().getContextClassLoader());
+        } catch (ClassNotFoundException | LinkageError t) {
+            JDK_METHOD_MISS_CACHE.add(internalAncestor);
+            return false;
+        }
+        Set<String> sigs = new HashSet<>();
+        // getMethods() returns all public methods including inherited ones
+        // — so java.util.TimerTask via this API reports run()V from Runnable.
+        for (java.lang.reflect.Method m : cls.getMethods()) {
+            sigs.add(m.getName() + org.objectweb.asm.Type.getMethodDescriptor(m));
+        }
+        // getDeclaredMethods() adds package/protected methods declared
+        // on this class (e.g. AbstractMap.Entry#setValue impl details).
+        for (java.lang.reflect.Method m : cls.getDeclaredMethods()) {
+            sigs.add(m.getName() + org.objectweb.asm.Type.getMethodDescriptor(m));
+        }
+        JDK_METHOD_CACHE.put(internalAncestor, sigs);
+        return sigs.contains(needle);
     }
 
     private static String methodId(String owner, String name, String desc) {
