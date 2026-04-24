@@ -9,6 +9,7 @@ import dev.kurumi.obfuscator.transformers.BlobStringTransformer;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
 import dev.kurumi.obfuscator.transformers.ClassExploderTransformer;
 import dev.kurumi.obfuscator.transformers.ClassLiteralTransformer;
+import dev.kurumi.obfuscator.transformers.EncryptedClassVaultTransformer;
 import dev.kurumi.obfuscator.transformers.FlowObfuscationTransformer;
 import dev.kurumi.obfuscator.transformers.IndyCallTransformer;
 import dev.kurumi.obfuscator.transformers.IndyFieldTransformer;
@@ -111,6 +112,13 @@ public class TransformerPipeline {
 
         // 13. Synthetic LocalVariableTable with confusing names (after strip)
         transformers.add(new LocalVariableTableObfuscator());
+
+        // 14. Final pass: pull selected exploder workers out of the JAR into
+        //      encrypted per-package vaults. Must run LAST so it encrypts
+        //      each worker's fully-obfuscated form (indy-call, indy-field,
+        //      blob-strings, polymorphic decoder, confusing locals, all
+        //      already applied).
+        transformers.add(new EncryptedClassVaultTransformer());
     }
 
     public void execute(ClassPool pool, ObfuscatorContext ctx) {
