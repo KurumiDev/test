@@ -146,6 +146,7 @@ public class Main implements Callable<Integer> {
         b.classExplodeEnabled = loaded.isTransformerEnabled("class-explode");
         b.indyFieldEnabled = loaded.isTransformerEnabled("indy-field");
         b.encryptedClassVaultEnabled = loaded.isTransformerEnabled("encrypted-class-vault");
+        b.cfgFlattenEnabled = loaded.isTransformerEnabled("cfg-flatten");
         return b;
     }
 
