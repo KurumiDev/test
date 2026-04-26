@@ -71,6 +71,12 @@ public class StringEncryptionTransformer implements Transformer {
             if (cn.name.endsWith("/package-info")) continue;
 
             int classKey = deriveClassKey(cn.name);
+            // Runtime-bound part: derived from the class's actual name reported
+            // by Class.getName() (dot-separated) so a decoder method ripped
+            // into another class produces the wrong stream key. Mirrors the
+            // class-identity binding already used by BlobStringTransformer
+            // and EncryptedClassVaultTransformer.
+            int runtimeBinding = cn.name.replace('/', '.').hashCode();
             String decryptName = decryptName(cn.name, strength);
             boolean classTouched = false;
 
@@ -96,7 +102,7 @@ public class StringEncryptionTransformer implements Transformer {
                     String original = (String) ldc.cst;
                     int perCallSalt = strength == ObfuscatorConfig.StringStrength.HEAVY
                             ? java.util.concurrent.ThreadLocalRandom.current().nextInt() : 0;
-                    String encoded = encode(original, classKey + methodKey + perCallSalt);
+                    String encoded = encode(original, classKey + methodKey + perCallSalt + runtimeBinding);
                     ldc.cst = encoded;
                     InsnList replacement = new InsnList();
                     String desc = strength == ObfuscatorConfig.StringStrength.HEAVY ? DECRYPT_DESC_HEAVY : DECRYPT_DESC_STANDARD;
@@ -182,6 +188,23 @@ public class StringEncryptionTransformer implements Transformer {
             il.add(new VarInsnNode(Opcodes.ILOAD, 1));
             il.add(new InsnNode(Opcodes.IADD));
         }
+        // k += MethodHandles.lookup().lookupClass().getName().hashCode();
+        // Runtime-bound part of the key. The encoder added the same value
+        // (computed from cn.name.replace('/', '.').hashCode()) to the stream
+        // seed, so the bytes round-trip only when the decoder is actually
+        // invoked from this very class. Copying the decoder method into a
+        // different class makes Class.getName() return a different string,
+        // the hash differs, and the stream desynchronizes -- producing
+        // garbage instead of plaintext.
+        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/invoke/MethodHandles",
+                "lookup", "()Ljava/lang/invoke/MethodHandles$Lookup;", false));
+        il.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/invoke/MethodHandles$Lookup",
+                "lookupClass", "()Ljava/lang/Class;", false));
+        il.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Class",
+                "getName", "()Ljava/lang/String;", false));
+        il.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String",
+                "hashCode", "()I", false));
+        il.add(new InsnNode(Opcodes.IADD));
         int kVar = dataVar + 1;
         il.add(new VarInsnNode(Opcodes.ISTORE, kVar));
 

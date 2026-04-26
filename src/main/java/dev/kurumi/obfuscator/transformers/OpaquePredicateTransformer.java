@@ -45,9 +45,32 @@ public class OpaquePredicateTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(OpaquePredicateTransformer.class);
 
-    private static final String FIELD_NAME = "$op";
     private static final String FIELD_DESC = "[J";
     private static final int SLOTS = 4;
+
+    /**
+     * Per-class hashed name for the long[] seed field. A previous version
+     * hard-coded the literal {@code "$op"}, which let a reverse engineer
+     * grep one symbol and locate every opaque-predicate seed field across
+     * the entire JAR. Hashing the class name into the field name (8-char
+     * alphanumeric suffix, FNV-1a + SplitMix64 finalizer) eliminates that
+     * single fingerprint while keeping the name deterministic per-class so
+     * cross-method reads continue to work.
+     */
+    private static String fieldName(String internalName) {
+        long h = 0xCBF29CE484222325L ^ 0x5A17C0DEL;
+        for (int i = 0; i < internalName.length(); i++) {
+            h ^= internalName.charAt(i);
+            h *= 0x100000001B3L;
+        }
+        char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
+        StringBuilder sb = new StringBuilder("$op");
+        for (int i = 0; i < 8; i++) {
+            sb.append(alphabet[(int) ((h >>> (i * 8)) & 0x3F) % alphabet.length]);
+            h = (h ^ (h >>> 7)) * 0xBF58476D1CE4E5B9L;
+        }
+        return sb.toString();
+    }
 
     @Override
     public String name() {
@@ -105,7 +128,7 @@ public class OpaquePredicateTransformer implements Transformer {
             switch (strategy) {
                 case 0 -> emitLowBitPredicate(cn, il, skip);        // $op[0] low bit == 0  ->  false
                 case 1 -> emitAvailProcessorsPredicate(il, skip);   // Runtime procs > 0    ->  true
-                default -> emitSelfDifferencePredicate(cn, il, skip); // $op[0] - $op[0] != 0 -> false
+                default -> emitCrossSlotXorPredicate(cn, il, skip); // (slot[0] ^ slot[1]) == slot[3]
             }
         }
         il.add(new InsnNode(Opcodes.ACONST_NULL));
@@ -191,30 +214,50 @@ public class OpaquePredicateTransformer implements Transformer {
         il.add(new JumpInsnNode(Opcodes.IF_ICMPGT, skip));
     }
 
-    // Mixed predicate: two independent reads of $op[0] cannot be folded; diff never matches a magic value.
-    private static void emitSelfDifferencePredicate(ClassNode cn, InsnList il, LabelNode skip) {
-        int magic = ThreadLocalRandom.current().nextInt(1, Integer.MAX_VALUE);
+    /**
+     * Cross-slot XOR identity: {@code (slot[0] ^ slot[1]) == slot[3]}.
+     *
+     * <p>{@code <clinit>} seeds {@code $op[3] = $op[0] ^ $op[1]} from
+     * {@code System.nanoTime()} and {@code System.currentTimeMillis()},
+     * so the equality is mathematically guaranteed at runtime. To prove
+     * it statically, a decompiler has to perform <em>interprocedural</em>
+     * data-flow analysis &mdash; trace the long[] writes in {@code <clinit>}
+     * through the heap and into the predicate&apos;s reads. CFR, Fernflower,
+     * and Vineflower do not constant-fold across &lt;clinit&gt; boundaries
+     * by default, so they are forced to keep the {@code ATHROW} branch as
+     * potentially live.
+     *
+     * <p>Replaces the earlier {@code (x - x) != magic} predicate, which had
+     * the well-known weakness that {@code x - x} algebraically simplifies
+     * to {@code 0L} regardless of the value of {@code x} &mdash; modern
+     * partial-evaluators (Vineflower&apos;s algebraic simplifier in
+     * particular) collapsed it to a constant comparison and pruned the
+     * dead branch.
+     */
+    private static void emitCrossSlotXorPredicate(ClassNode cn, InsnList il, LabelNode skip) {
         emitLoadSlot(cn, il, 0);
-        emitLoadSlot(cn, il, 0);
-        il.add(new InsnNode(Opcodes.LSUB));
-        il.add(new org.objectweb.asm.tree.LdcInsnNode((long) magic));
+        emitLoadSlot(cn, il, 1);
+        il.add(new InsnNode(Opcodes.LXOR));
+        emitLoadSlot(cn, il, 3);
         il.add(new InsnNode(Opcodes.LCMP));
-        il.add(new JumpInsnNode(Opcodes.IFNE, skip));
+        // equal -> skip the throw (i.e. always-true branch)
+        il.add(new JumpInsnNode(Opcodes.IFEQ, skip));
     }
 
     private static void emitLoadSlot(ClassNode cn, InsnList il, int slot) {
-        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, FIELD_NAME, FIELD_DESC));
+        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
         il.add(new IntInsnNode(Opcodes.BIPUSH, slot));
         il.add(new InsnNode(Opcodes.LALOAD));
     }
 
     private static void ensureSeedField(ClassNode cn) {
+        String fieldName = fieldName(cn.name);
         boolean present = cn.fields != null && cn.fields.stream()
-                .anyMatch(f -> FIELD_NAME.equals(f.name) && FIELD_DESC.equals(f.desc));
+                .anyMatch(f -> fieldName.equals(f.name) && FIELD_DESC.equals(f.desc));
         if (!present) {
             FieldNode fn = new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL
                     | Opcodes.ACC_SYNTHETIC,
-                    FIELD_NAME, FIELD_DESC, null, null);
+                    fieldName, FIELD_DESC, null, null);
             cn.fields.add(fn);
         }
 
@@ -236,7 +279,7 @@ public class OpaquePredicateTransformer implements Transformer {
         // new long[SLOTS]
         prefix.add(new IntInsnNode(Opcodes.BIPUSH, SLOTS));
         prefix.add(new IntInsnNode(Opcodes.NEWARRAY, Opcodes.T_LONG));
-        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, FIELD_NAME, FIELD_DESC));
+        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
         // slot 0 = System.nanoTime() | 1L
         seedSlot(prefix, cn, 0, SeedKind.NANO_ODD);
         // slot 1 = (System.currentTimeMillis() << 1) | 3L
@@ -256,7 +299,7 @@ public class OpaquePredicateTransformer implements Transformer {
     private enum SeedKind { NANO_ODD, MILLIS_ODD, PROCS_ODD, MIX }
 
     private static void seedSlot(InsnList il, ClassNode cn, int slot, SeedKind kind) {
-        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, FIELD_NAME, FIELD_DESC));
+        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
         il.add(new IntInsnNode(Opcodes.BIPUSH, slot));
         switch (kind) {
             case NANO_ODD -> {
@@ -284,10 +327,10 @@ public class OpaquePredicateTransformer implements Transformer {
             }
             case MIX -> {
                 // arr = $op; arr[3] = arr[0] ^ arr[1];
-                il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, FIELD_NAME, FIELD_DESC));
+                il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
                 il.add(new InsnNode(Opcodes.ICONST_0));
                 il.add(new InsnNode(Opcodes.LALOAD));
-                il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, FIELD_NAME, FIELD_DESC));
+                il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
                 il.add(new InsnNode(Opcodes.ICONST_1));
                 il.add(new InsnNode(Opcodes.LALOAD));
                 il.add(new InsnNode(Opcodes.LXOR));

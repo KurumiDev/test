@@ -41,14 +41,47 @@ public class MemberShufflerTransformer implements Transformer {
 
     @Override
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
-        Random rnd = new Random(0xBAADF00DL);
+        // Per-class seed mixed with a pool-wide fingerprint. The previous
+        // implementation used a global fixed seed (0xBAADF00DL), which made
+        // the post-shuffle order across two unrelated JARs share the same
+        // permutation pattern -- a weak fingerprint a reverse engineer
+        // could exploit. Per-class seeding keeps the order deterministic
+        // for a given input (mapping-stable) while removing the global
+        // signature.
+        long fingerprint = poolFingerprint(pool);
         int classes = 0;
         for (ClassNode cn : pool.allClassNodes()) {
+            Random rnd = new Random(fingerprint ^ stableHash(cn.name));
             shuffleMethods(cn, rnd);
             shuffleFields(cn, rnd);
             classes++;
         }
         log.info("Shuffled members in {} classes", classes);
+    }
+
+    private static long poolFingerprint(ClassPool pool) {
+        long h = 0xCBF29CE484222325L ^ 0xBAADF00DL;
+        for (ClassNode cn : pool.allClassNodes()) {
+            String n = cn.name;
+            for (int i = 0; i < n.length(); i++) {
+                h ^= n.charAt(i);
+                h *= 0x100000001B3L;
+            }
+            h ^= 0x5C;
+        }
+        h = (h ^ (h >>> 30)) * 0xBF58476D1CE4E5B9L;
+        h = (h ^ (h >>> 27)) * 0x94D049BB133111EBL;
+        h ^= (h >>> 31);
+        return h;
+    }
+
+    private static long stableHash(String s) {
+        long h = 0xCBF29CE484222325L;
+        for (int i = 0; i < s.length(); i++) {
+            h ^= s.charAt(i);
+            h *= 0x100000001B3L;
+        }
+        return h;
     }
 
     private void shuffleMethods(ClassNode cn, Random rnd) {

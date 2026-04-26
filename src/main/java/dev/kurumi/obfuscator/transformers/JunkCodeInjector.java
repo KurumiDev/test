@@ -110,7 +110,14 @@ public class JunkCodeInjector implements Transformer {
 
     @Override
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
-        Random rnd = new Random(0xDEADC0DEL);
+        // Seed derived from the class pool's content so different inputs
+        // produce different decoy/honeypot suffixes, while a given input
+        // remains deterministic (important for reproducible builds and
+        // mapping-file stability). The previous implementation hard-coded
+        // 0xDEADC0DEL, which gave every JAR the same suffix sequence and
+        // let a reverse engineer fingerprint synthesised methods across
+        // entirely unrelated obfuscator outputs.
+        Random rnd = new Random(poolFingerprint(pool));
         int injected = 0;
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION)) != 0) continue;
@@ -315,5 +322,29 @@ public class JunkCodeInjector implements Transformer {
 
     private static String fakeString(Random rnd) {
         return FAKE_STRINGS[rnd.nextInt(FAKE_STRINGS.length)];
+    }
+
+    /**
+     * FNV-1a-based fingerprint of the {@link ClassPool}'s class list.
+     * Hashing only the class names (not their bytecode) keeps the seed
+     * stable across runs that obfuscate the same input but vary in which
+     * later transformers are enabled, while still discriminating between
+     * different input JARs.
+     */
+    private static long poolFingerprint(ClassPool pool) {
+        long h = 0xCBF29CE484222325L;
+        for (ClassNode cn : pool.allClassNodes()) {
+            String n = cn.name;
+            for (int i = 0; i < n.length(); i++) {
+                h ^= n.charAt(i);
+                h *= 0x100000001B3L;
+            }
+            h ^= 0x5C; // separator so "ab"+"c" != "a"+"bc"
+        }
+        // SplitMix64 finalizer for better avalanche
+        h = (h ^ (h >>> 30)) * 0xBF58476D1CE4E5B9L;
+        h = (h ^ (h >>> 27)) * 0x94D049BB133111EBL;
+        h ^= (h >>> 31);
+        return h;
     }
 }
