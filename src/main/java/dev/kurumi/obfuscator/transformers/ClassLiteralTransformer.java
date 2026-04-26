@@ -44,9 +44,31 @@ public class ClassLiteralTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(ClassLiteralTransformer.class);
 
-    private static final String HELPER_NAME = "$obfCl";
+    private static final String HELPER_PREFIX = "$obfCl";
     private static final String HELPER_DESC = "(Ljava/lang/String;)Ljava/lang/Class;";
     private static final boolean ENABLE_ARRAYS = true;
+
+    /**
+     * Per-class hashed helper name. The prior implementation used a fixed
+     * literal ({@code "$obfCl"}) which gave reverse-engineers a single
+     * grep target to enumerate every class-literal helper across the JAR.
+     * Hashing the owner&apos;s internal name into the suffix preserves
+     * deterministic per-class lookup while removing the global fingerprint.
+     */
+    private static String helperName(String internalName) {
+        long h = 0xCBF29CE484222325L ^ 0xC1A55L;
+        for (int i = 0; i < internalName.length(); i++) {
+            h ^= internalName.charAt(i);
+            h *= 0x100000001B3L;
+        }
+        char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
+        StringBuilder sb = new StringBuilder(HELPER_PREFIX);
+        for (int i = 0; i < 6; i++) {
+            sb.append(alphabet[(int) ((h >>> (i * 8)) & 0x3F) % alphabet.length]);
+            h = (h ^ (h >>> 7)) * 0xBF58476D1CE4E5B9L;
+        }
+        return sb.toString();
+    }
 
     @Override
     public String name() {
@@ -60,10 +82,11 @@ public class ClassLiteralTransformer implements Transformer {
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
 
+            String helperName = helperName(cn.name);
             boolean touched = false;
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null || mn.instructions.size() == 0) continue;
-                if (mn.name.equals(HELPER_NAME)) continue;
+                if (mn.name.equals(helperName)) continue;
                 if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) continue;
 
                 List<LdcInsnNode> targets = new ArrayList<>();
@@ -86,7 +109,7 @@ public class ClassLiteralTransformer implements Transformer {
                     InsnList il = new InsnList();
                     il.add(new LdcInsnNode(runtimeName));
                     il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, cn.name,
-                            HELPER_NAME, HELPER_DESC, false));
+                            helperName, HELPER_DESC, false));
                     mn.instructions.insert(ldc, il);
                     mn.instructions.remove(ldc);
                     replaced++;
@@ -95,7 +118,7 @@ public class ClassLiteralTransformer implements Transformer {
             }
 
             if (touched) {
-                injectHelper(cn);
+                injectHelper(cn, helperName);
                 classesTouched++;
             }
         }
@@ -113,13 +136,13 @@ public class ClassLiteralTransformer implements Transformer {
         return null;
     }
 
-    private static void injectHelper(ClassNode cn) {
+    private static void injectHelper(ClassNode cn, String helperName) {
         for (MethodNode m : cn.methods) {
-            if (HELPER_NAME.equals(m.name) && HELPER_DESC.equals(m.desc)) return;
+            if (helperName.equals(m.name) && HELPER_DESC.equals(m.desc)) return;
         }
         MethodNode mn = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
-                HELPER_NAME, HELPER_DESC, null,
+                helperName, HELPER_DESC, null,
                 new String[]{"java/lang/NoClassDefFoundError"});
         InsnList il = new InsnList();
 

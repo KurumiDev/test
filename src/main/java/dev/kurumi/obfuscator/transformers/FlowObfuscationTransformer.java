@@ -12,6 +12,7 @@ import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,18 +71,32 @@ public class FlowObfuscationTransformer implements Transformer {
         return any;
     }
 
-    /** Insert an opaque-true IFNE at a random safe instruction. */
+    /**
+     * Insert an opaque-true IFNE at a random safe instruction.
+     *
+     * <p>The predicate uses {@code (System.nanoTime() | 1L) != 0L}. nanoTime
+     * is opaque to every static analyzer (its return value is unknowable
+     * without executing the method); {@code | 1L} guarantees the result is
+     * non-zero at runtime. A previous version of this routine emitted
+     * {@code (LDC | 1) != 0}, which is a closed-form constant any partial
+     * evaluator (CFR's deadcode pass, Vineflower's algebraic simplifier)
+     * collapses to {@code true} and prunes the {@code ATHROW} branch
+     * outright. nanoTime() blocks that pruning: the analyzer cannot know
+     * the value is non-zero at compile time, so it has to keep the branch.
+     */
     private boolean bogusJumps(MethodNode mn) {
         InsnList insns = mn.instructions;
         AbstractInsnNode target = pickInsertionPoint(mn);
         if (target == null) return false;
         LabelNode skip = new LabelNode();
         InsnList block = new InsnList();
-        // (x | 1) != 0 for any x -> always true
-        int x = ThreadLocalRandom.current().nextInt();
-        block.add(new LdcInsnNode(x));
-        block.add(new InsnNode(Opcodes.ICONST_1));
-        block.add(new InsnNode(Opcodes.IOR));
+        // (System.nanoTime() | 1L) != 0L  --  always true at runtime, opaque to static analysis.
+        block.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/System", "nanoTime",
+                "()J", false));
+        block.add(new LdcInsnNode(1L));
+        block.add(new InsnNode(Opcodes.LOR));
+        block.add(new InsnNode(Opcodes.LCONST_0));
+        block.add(new InsnNode(Opcodes.LCMP));
         block.add(new JumpInsnNode(Opcodes.IFNE, skip));
         // Unreachable "dead" zone: ATHROW to keep verifier happy
         block.add(new InsnNode(Opcodes.ACONST_NULL));

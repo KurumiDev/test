@@ -90,7 +90,7 @@ public class NumberObfuscationTransformer implements Transformer {
 
     private InsnList obfInt(int value) {
         ThreadLocalRandom r = ThreadLocalRandom.current();
-        int style = r.nextInt(3);
+        int style = r.nextInt(4);
         int a = r.nextInt();
         InsnList il = new InsnList();
         switch (style) {
@@ -106,10 +106,24 @@ public class NumberObfuscationTransformer implements Transformer {
                 il.add(push(a));
                 il.add(new InsnNode(Opcodes.ISUB));
             }
+            case 2 -> {
+                // value = a - (a - value)  (two ISUBs; doesn't algebraically
+                // collapse the way ~(~value) did, so naive constant folders
+                // leave both nodes in the AST).
+                il.add(push(a));
+                il.add(push(a));
+                il.add(push(a - value));
+                il.add(new InsnNode(Opcodes.ISUB));
+                il.add(new InsnNode(Opcodes.ISUB));
+            }
             default -> {
-                // value = ~(~value)
-                il.add(push(~value));
-                il.add(new InsnNode(Opcodes.ICONST_M1));
+                // value = a XOR b XOR ((a XOR b) XOR value); three-leg XOR
+                // chain — defeats simple pairwise XOR-folding.
+                int b = r.nextInt();
+                il.add(push(a));
+                il.add(push(b));
+                il.add(push((a ^ b) ^ value));
+                il.add(new InsnNode(Opcodes.IXOR));
                 il.add(new InsnNode(Opcodes.IXOR));
             }
         }
@@ -118,7 +132,7 @@ public class NumberObfuscationTransformer implements Transformer {
 
     private InsnList obfLong(long value) {
         ThreadLocalRandom r = ThreadLocalRandom.current();
-        int style = r.nextInt(3);
+        int style = r.nextInt(4);
         long a = r.nextLong();
         InsnList il = new InsnList();
         switch (style) {
@@ -134,10 +148,21 @@ public class NumberObfuscationTransformer implements Transformer {
                 il.add(new LdcInsnNode(a));
                 il.add(new InsnNode(Opcodes.LSUB));
             }
+            case 2 -> {
+                // value = a - (a - value)
+                il.add(new LdcInsnNode(a));
+                il.add(new LdcInsnNode(a));
+                il.add(new LdcInsnNode(a - value));
+                il.add(new InsnNode(Opcodes.LSUB));
+                il.add(new InsnNode(Opcodes.LSUB));
+            }
             default -> {
-                // value = ~(~value) via long XOR with -1L
-                il.add(new LdcInsnNode(~value));
-                il.add(new LdcInsnNode(-1L));
+                // value = a XOR b XOR ((a XOR b) XOR value); three-leg XOR chain
+                long b = r.nextLong();
+                il.add(new LdcInsnNode(a));
+                il.add(new LdcInsnNode(b));
+                il.add(new LdcInsnNode((a ^ b) ^ value));
+                il.add(new InsnNode(Opcodes.LXOR));
                 il.add(new InsnNode(Opcodes.LXOR));
             }
         }
