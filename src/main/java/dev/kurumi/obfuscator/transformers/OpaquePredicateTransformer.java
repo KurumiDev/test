@@ -126,9 +126,11 @@ public class OpaquePredicateTransformer implements Transformer {
             emitHoneypotPredicate(cn, il, skip, honeypot);
         } else {
             switch (strategy) {
-                case 0 -> emitLowBitPredicate(cn, il, skip);        // $op[0] low bit == 0  ->  false
-                case 1 -> emitAvailProcessorsPredicate(il, skip);   // Runtime procs > 0    ->  true
-                default -> emitCrossSlotXorPredicate(cn, il, skip); // (slot[0] ^ slot[1]) == slot[3]
+                case 0 -> emitLowBitPredicate(cn, il, skip);            // $op[0] low bit == 0    ->  false
+                case 1 -> emitAvailProcessorsPredicate(il, skip);       // Runtime procs > 0      ->  true
+                case 2 -> emitCrossSlotXorPredicate(cn, il, skip);      // (slot[0] ^ slot[1]) == slot[3]
+                case 3 -> emitTrailingZerosPredicate(cn, il, skip);     // ntz(odd slot[0]) == 0  ->  true
+                default -> emitSignumProcessorsPredicate(cn, il, skip); // signum(slot[2]) == 1   ->  true
             }
         }
         il.add(new InsnNode(Opcodes.ACONST_NULL));
@@ -163,12 +165,24 @@ public class OpaquePredicateTransformer implements Transformer {
         return candidate;
     }
 
+    /**
+     * Recognises method names produced by {@link JunkCodeInjector}. Honeypot
+     * names are now {@code &lt;verb&gt;&lt;Noun&gt;_&lt;hex&gt;} with the
+     * verb drawn from {@link JunkCodeInjector#honeypotVerbs()} -- a known
+     * static pool -- so a prefix-match against that pool suffices to
+     * identify the decoy without having to share the per-JAR random seed.
+     */
     private static boolean looksLikeHoneypot(String name) {
         int under = name.indexOf('_');
         if (under <= 0 || under >= name.length() - 1) return false;
         String root = name.substring(0, under);
-        for (String r : JunkCodeInjector.MISLEADING_NAMES()) {
-            if (r.equals(root)) return true;
+        for (String verb : JunkCodeInjector.honeypotVerbs()) {
+            if (root.length() <= verb.length()) continue;
+            if (!root.startsWith(verb)) continue;
+            char next = root.charAt(verb.length());
+            // Compound names follow CamelCase; the next char after the verb
+            // must be an uppercase letter (e.g. "verifyLicense").
+            if (Character.isUpperCase(next)) return true;
         }
         return false;
     }
@@ -242,6 +256,51 @@ public class OpaquePredicateTransformer implements Transformer {
         il.add(new InsnNode(Opcodes.LCMP));
         // equal -> skip the throw (i.e. always-true branch)
         il.add(new JumpInsnNode(Opcodes.IFEQ, skip));
+    }
+
+    /**
+     * Trailing-zeros predicate: {@code Long.numberOfTrailingZeros(slot[0]) == 0}.
+     *
+     * <p>{@code <clinit>} seeds {@code slot[0] = System.nanoTime() | 1L} so it
+     * is always odd at runtime, which means its lowest set bit is bit 0
+     * &rarr; {@code numberOfTrailingZeros} returns 0 &rarr; equality holds
+     * &rarr; the throw is skipped. To prove the equality statically a
+     * decompiler has to reason about the {@code | 1L} write in
+     * {@code <clinit>} and {@code Long.numberOfTrailingZeros}'s spec at the
+     * same time, which mainstream tools (CFR, Fernflower, Vineflower) do
+     * not.
+     *
+     * <p>Different shape than {@link #emitLowBitPredicate} and
+     * {@link #emitCrossSlotXorPredicate} on purpose: this one calls a
+     * {@link Long} static method, so the predicate also pulls in an
+     * intrinsic-table lookup at the JIT level rather than just bit-and.
+     */
+    private static void emitTrailingZerosPredicate(ClassNode cn, InsnList il, LabelNode skip) {
+        emitLoadSlot(cn, il, 0);
+        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/Long",
+                "numberOfTrailingZeros", "(J)I", false));
+        // ntz returns int; compare against 0 directly.
+        il.add(new JumpInsnNode(Opcodes.IFEQ, skip));
+    }
+
+    /**
+     * Signum-on-positive predicate: {@code Long.signum(slot[2]) == 1}.
+     *
+     * <p>{@code <clinit>} seeds {@code slot[2] = availableProcessors() | 1L}
+     * which is in the range {@code 1..N} for any real JVM, hence strictly
+     * positive &rarr; {@code Long.signum} returns 1. To prove this, a
+     * decompiler has to reason about both the {@code <clinit>} initializer
+     * and the contract of {@code Runtime.availableProcessors()} (which
+     * returns {@code int >= 1}). Pulling in JDK contract knowledge across
+     * a static initializer write is well outside what mainstream
+     * decompilers attempt during constant folding.
+     */
+    private static void emitSignumProcessorsPredicate(ClassNode cn, InsnList il, LabelNode skip) {
+        emitLoadSlot(cn, il, 2);
+        il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/Long",
+                "signum", "(J)I", false));
+        il.add(new InsnNode(Opcodes.ICONST_1));
+        il.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, skip));
     }
 
     private static void emitLoadSlot(ClassNode cn, InsnList il, int slot) {
@@ -343,7 +402,9 @@ public class OpaquePredicateTransformer implements Transformer {
         return switch (type) {
             case MATH -> 0;
             case RUNTIME -> 1;
-            case MIXED -> ThreadLocalRandom.current().nextInt(3);
+            // Five strategies in MIXED: lowBit (0), procs (1),
+            // crossSlotXor (2), trailingZeros (3), signumProcs (4).
+            case MIXED -> ThreadLocalRandom.current().nextInt(5);
         };
     }
 }

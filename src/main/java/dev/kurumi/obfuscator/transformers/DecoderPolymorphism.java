@@ -23,7 +23,7 @@ import org.objectweb.asm.tree.VarInsnNode;
  * ({@link #emitKeyUpdate}, {@link #emitMask}). The same class always resolves
  * to the same variant so decryption round-trips.
  *
- * <p>Four variants ship out of the box, all symmetric XOR-based so encrypt
+ * <p>Five variants ship out of the box, all symmetric XOR-based so encrypt
  * and decrypt share the same per-byte operation. They differ in the mask
  * function and key-update function, which is what changes the <em>shape</em>
  * of the decoded bytecode a reverse engineer has to reconstruct:
@@ -31,7 +31,7 @@ import org.objectweb.asm.tree.VarInsnNode;
  * <ul>
  *   <li><b>V0 &mdash; LCG classic.</b> mask = {@code k & 0xFF};
  *       {@code k = k * 0x45D9F3B + 0x119DE1F3}. Was the single shared shape
- *       before this change; kept for one of the four arms.</li>
+ *       before this change; kept for one of the arms.</li>
  *   <li><b>V1 &mdash; XORshift32.</b> mask = {@code k & 0xFF};
  *       {@code k ^= k << 13; k ^= k >>> 17; k ^= k << 5}. Three shifts plus
  *       two XORs, no arithmetic multiplies &mdash; different Hamming profile
@@ -46,6 +46,13 @@ import org.objectweb.asm.tree.VarInsnNode;
  *       schedule depends on the <em>decoded</em> byte, so the attacker can
  *       no longer symbolically pre-compute the keystream without knowing the
  *       plaintext.</li>
+ *   <li><b>V4 &mdash; index-keyed rotate-LCG.</b> mask =
+ *       {@code (rotateLeft(k, 5) ^ (i &lt;&lt; 3)) & 0xFF};
+ *       {@code k = k * 0x6C078965 + i + 1}. Both mask and key-update
+ *       depend on the byte index, defeating any simplification that
+ *       treats {@code i} as a free variable. Uses a different LCG
+ *       multiplier than V0/V3 so symbolic-execution caches across
+ *       variants don't collide.</li>
  * </ul>
  *
  * <p>A reverse engineer who extracts <em>one</em> class's decoder body into
@@ -57,7 +64,7 @@ public final class DecoderPolymorphism {
 
     private DecoderPolymorphism() {}
 
-    public static final int VARIANT_COUNT = 4;
+    public static final int VARIANT_COUNT = 5;
 
     /**
      * Deterministic per-class variant selector. FNV-1a hash of the
@@ -97,6 +104,9 @@ public final class DecoderPolymorphism {
                 case 2:
                     mask = (k ^ (i * 0x9E3779B9)) & 0xFF;
                     break;
+                case 4:
+                    mask = (Integer.rotateLeft(k, 5) ^ (i << 3)) & 0xFF;
+                    break;
                 default:
                     mask = k & 0xFF;
             }
@@ -119,6 +129,8 @@ public final class DecoderPolymorphism {
                 return Integer.rotateLeft(k, 11) + 0xDEADBEEF;
             case 3:
                 return k * 0x45D9F3B + plainByte + 0x119DE1F3;
+            case 4:
+                return k * 0x6C078965 + i + 1;
             default:
                 return k * 0x45D9F3B + 0x119DE1F3;
         }
@@ -141,6 +153,19 @@ public final class DecoderPolymorphism {
             il.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
             il.add(new LdcInsnNode(Integer.valueOf(0x9E3779B9)));
             il.add(new InsnNode(Opcodes.IMUL));
+            il.add(new InsnNode(Opcodes.IXOR));
+            il.add(new IntInsnNode(Opcodes.SIPUSH, 0xFF));
+            il.add(new InsnNode(Opcodes.IAND));
+        } else if (variant == 4) {
+            // (Integer.rotateLeft(k, 5) ^ (i << 3)) & 0xFF
+            il.add(new VarInsnNode(Opcodes.ILOAD, kSlot));
+            il.add(new IntInsnNode(Opcodes.BIPUSH, 5));
+            il.add(new org.objectweb.asm.tree.MethodInsnNode(
+                    Opcodes.INVOKESTATIC, "java/lang/Integer", "rotateLeft",
+                    "(II)I", false));
+            il.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+            il.add(new IntInsnNode(Opcodes.BIPUSH, 3));
+            il.add(new InsnNode(Opcodes.ISHL));
             il.add(new InsnNode(Opcodes.IXOR));
             il.add(new IntInsnNode(Opcodes.SIPUSH, 0xFF));
             il.add(new InsnNode(Opcodes.IAND));
@@ -172,9 +197,24 @@ public final class DecoderPolymorphism {
             case 3:
                 emitLcgPlainFeedback(il, kSlot, plainSlot);
                 break;
+            case 4:
+                emitIndexedLcg(il, kSlot, iSlot);
+                break;
             default:
                 emitLcgClassic(il, kSlot);
         }
+    }
+
+    private static void emitIndexedLcg(InsnList il, int kSlot, int iSlot) {
+        // k = k * 0x6C078965 + i + 1
+        il.add(new VarInsnNode(Opcodes.ILOAD, kSlot));
+        il.add(new LdcInsnNode(Integer.valueOf(0x6C078965)));
+        il.add(new InsnNode(Opcodes.IMUL));
+        il.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        il.add(new InsnNode(Opcodes.IADD));
+        il.add(new InsnNode(Opcodes.ICONST_1));
+        il.add(new InsnNode(Opcodes.IADD));
+        il.add(new VarInsnNode(Opcodes.ISTORE, kSlot));
     }
 
     private static void emitLcgClassic(InsnList il, int kSlot) {

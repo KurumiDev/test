@@ -150,6 +150,14 @@ public class IndyCallTransformer implements Transformer {
                     ? min.desc
                     : "(L" + min.owner + ";" + min.desc.substring(1);
             Handle bsm = new Handle(Opcodes.H_INVOKESTATIC, cn.name, bsmName, BSM_DESC, false);
+            // The kind argument used to ride in the BSM-args array as the
+            // raw constant 0/1/2, which is just two distinguishable bits
+            // in a sea of opaque encrypted strings -- a static reverser
+            // could fingerprint INVOKESTATIC vs INVOKEVIRTUAL call sites
+            // by reading args[3] alone, without inverting the string
+            // decoder. Encrypt it with a per-class mask so all four BSM
+            // args look like opaque integers.
+            int mask = kindMask(cn.name);
             InvokeDynamicInsnNode indy = new InvokeDynamicInsnNode(
                     "m",
                     indyDesc,
@@ -157,7 +165,7 @@ public class IndyCallTransformer implements Transformer {
                     encrypt(min.owner, variant),
                     encrypt(min.name, variant),
                     encrypt(min.desc, variant),
-                    Integer.valueOf(kind)
+                    Integer.valueOf(kind ^ mask)
             );
             mn.instructions.set(min, indy);
         }
@@ -168,6 +176,27 @@ public class IndyCallTransformer implements Transformer {
         byte[] src = plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         byte[] out = DecoderPolymorphism.xorByteStream(src, INDY_KEY, variant);
         return java.util.Base64.getEncoder().encodeToString(out);
+    }
+
+    /**
+     * Per-class XOR mask applied to the BSM {@code kind} argument.
+     * Same-class encoder and BSM both compute (or bake) the same mask so
+     * the value round-trips. FNV-1a of the class internal name with a
+     * SplitMix64 finalizer for dispersion.
+     */
+    private static int kindMask(String internalName) {
+        long h = 0xCBF29CE484222325L;
+        for (int i = 0; i < internalName.length(); i++) {
+            h ^= internalName.charAt(i);
+            h *= 0x100000001B3L;
+        }
+        h = (h ^ (h >>> 30)) * 0xBF58476D1CE4E5B9L;
+        h = (h ^ (h >>> 27)) * 0x94D049BB133111EBL;
+        h ^= (h >>> 31);
+        // Pack into a 16-bit-ish range so the LDC stays a small positive
+        // int -- decoders can use SIPUSH instead of LDC, and the mask is
+        // still wide enough that 0/1/2 don't visually cluster post-XOR.
+        return (int) (h ^ (h >>> 16)) & 0xFFFF;
     }
 
     private void injectBootstrap(ClassNode cn, String bsmName, String decName, int variant) {
@@ -314,13 +343,16 @@ public class IndyCallTransformer implements Transformer {
                 "(Ljava/lang/String;)Ljava/lang/String;", false));
         il.add(new VarInsnNode(Opcodes.ASTORE, L_DESC));
 
-        // kind = ((Integer) args[3]).intValue()
+        // kind = ((Integer) args[3]).intValue() ^ <baked-per-class-mask>
         il.add(new VarInsnNode(Opcodes.ALOAD, L_ARGS));
         il.add(new InsnNode(Opcodes.ICONST_3));
         il.add(new InsnNode(Opcodes.AALOAD));
         il.add(new TypeInsnNode(Opcodes.CHECKCAST, "java/lang/Integer"));
         il.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Integer",
                 "intValue", "()I", false));
+        int kMask = kindMask(cn.name);
+        il.add(new LdcInsnNode(Integer.valueOf(kMask)));
+        il.add(new InsnNode(Opcodes.IXOR));
         il.add(new VarInsnNode(Opcodes.ISTORE, L_KIND));
 
         // cls = Class.forName(ownerStr.replace('/','.'), false, lookup.lookupClass().getClassLoader())

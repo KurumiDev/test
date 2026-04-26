@@ -51,6 +51,7 @@ public class ObfuscatorConfig {
 
     private final boolean numberEnabled;
     private final boolean numberOnlyMagic;
+    private final int numberDepth;
 
     private final boolean invokeDynamicEnabled;
     private final boolean invokeDynamicAutoDetectLambdas;
@@ -101,6 +102,7 @@ public class ObfuscatorConfig {
         this.opaqueType = b.opaqueType;
         this.numberEnabled = b.numberEnabled;
         this.numberOnlyMagic = b.numberOnlyMagic;
+        this.numberDepth = Math.max(1, Math.min(4, b.numberDepth));
         this.invokeDynamicEnabled = b.invokeDynamicEnabled;
         this.invokeDynamicAutoDetectLambdas = b.invokeDynamicAutoDetectLambdas;
         this.classLiteralEnabled = b.classLiteralEnabled;
@@ -163,6 +165,7 @@ public class ObfuscatorConfig {
 
         if (c.hasPath("transformers.number-obfuscation.enabled")) b.numberEnabled = c.getBoolean("transformers.number-obfuscation.enabled");
         if (c.hasPath("transformers.number-obfuscation.only-magic-numbers")) b.numberOnlyMagic = c.getBoolean("transformers.number-obfuscation.only-magic-numbers");
+        if (c.hasPath("transformers.number-obfuscation.depth")) b.numberDepth = c.getInt("transformers.number-obfuscation.depth");
 
         if (c.hasPath("transformers.invokedynamic.enabled")) b.invokeDynamicEnabled = c.getBoolean("transformers.invokedynamic.enabled");
         if (c.hasPath("transformers.invokedynamic.auto-detect-lambdas")) b.invokeDynamicAutoDetectLambdas = c.getBoolean("transformers.invokedynamic.auto-detect-lambdas");
@@ -222,6 +225,7 @@ public class ObfuscatorConfig {
     public int flowComplexity() { return flowComplexity; }
     public OpaqueType opaqueType() { return opaqueType; }
     public boolean numberOnlyMagic() { return numberOnlyMagic; }
+    public int numberDepth() { return numberDepth; }
     public boolean invokeDynamicAutoDetectLambdas() { return invokeDynamicAutoDetectLambdas; }
     public List<String> exemptions() { return exemptions; }
     public boolean autoExempt() { return autoExempt; }
@@ -285,6 +289,7 @@ public class ObfuscatorConfig {
 
         public boolean numberEnabled = true;
         public boolean numberOnlyMagic = true;
+        public int numberDepth = 1;
 
         public boolean invokeDynamicEnabled = false;
         public boolean invokeDynamicAutoDetectLambdas = true;

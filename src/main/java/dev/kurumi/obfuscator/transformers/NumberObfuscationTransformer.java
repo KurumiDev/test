@@ -33,6 +33,7 @@ public class NumberObfuscationTransformer implements Transformer {
     @Override
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         boolean onlyMagic = ctx.config().numberOnlyMagic();
+        int depth = ctx.config().numberDepth();
         int replaced = 0;
         for (ClassNode cn : pool.allClassNodes()) {
             for (MethodNode mn : cn.methods) {
@@ -43,7 +44,7 @@ public class NumberObfuscationTransformer implements Transformer {
                     Integer iv = intConstant(insn);
                     if (iv != null) {
                         if (onlyMagic && isTrivialInt(iv)) continue;
-                        InsnList rep = obfInt(iv);
+                        InsnList rep = obfInt(iv, depth);
                         mn.instructions.insert(insn, rep);
                         mn.instructions.remove(insn);
                         replaced++;
@@ -52,7 +53,7 @@ public class NumberObfuscationTransformer implements Transformer {
                     Long lv = longConstant(insn);
                     if (lv != null) {
                         if (onlyMagic && isTrivialLong(lv)) continue;
-                        InsnList rep = obfLong(lv);
+                        InsnList rep = obfLong(lv, depth);
                         mn.instructions.insert(insn, rep);
                         mn.instructions.remove(insn);
                         replaced++;
@@ -60,7 +61,7 @@ public class NumberObfuscationTransformer implements Transformer {
                 }
             }
         }
-        log.info("Obfuscated {} numeric constants", replaced);
+        log.info("Obfuscated {} numeric constants (depth={})", replaced, depth);
     }
 
     private Integer intConstant(AbstractInsnNode insn) {
@@ -88,7 +89,15 @@ public class NumberObfuscationTransformer implements Transformer {
         return v == 0L || v == 1L;
     }
 
-    private InsnList obfInt(int value) {
+    /**
+     * Build an int-pushing {@link InsnList} that evaluates to {@code value}.
+     * When {@code depth > 1}, each immediate literal in the produced
+     * sequence is itself recursively obfuscated &mdash; producing a
+     * nested chain of {@code (depth - 1)} levels deep. Static folders
+     * have to fully evaluate the entire tree before recovering the
+     * original constant, raising the analysis cost geometrically.
+     */
+    private InsnList obfInt(int value, int depth) {
         ThreadLocalRandom r = ThreadLocalRandom.current();
         int style = r.nextInt(4);
         int a = r.nextInt();
@@ -96,23 +105,23 @@ public class NumberObfuscationTransformer implements Transformer {
         switch (style) {
             case 0 -> {
                 // value = a XOR (a XOR value)
-                il.add(push(a));
-                il.add(push(a ^ value));
+                il.add(intLeaf(a, depth));
+                il.add(intLeaf(a ^ value, depth));
                 il.add(new InsnNode(Opcodes.IXOR));
             }
             case 1 -> {
                 // value = (a + value) - a
-                il.add(push(a + value));
-                il.add(push(a));
+                il.add(intLeaf(a + value, depth));
+                il.add(intLeaf(a, depth));
                 il.add(new InsnNode(Opcodes.ISUB));
             }
             case 2 -> {
                 // value = a - (a - value)  (two ISUBs; doesn't algebraically
                 // collapse the way ~(~value) did, so naive constant folders
                 // leave both nodes in the AST).
-                il.add(push(a));
-                il.add(push(a));
-                il.add(push(a - value));
+                il.add(intLeaf(a, depth));
+                il.add(intLeaf(a, depth));
+                il.add(intLeaf(a - value, depth));
                 il.add(new InsnNode(Opcodes.ISUB));
                 il.add(new InsnNode(Opcodes.ISUB));
             }
@@ -120,9 +129,9 @@ public class NumberObfuscationTransformer implements Transformer {
                 // value = a XOR b XOR ((a XOR b) XOR value); three-leg XOR
                 // chain — defeats simple pairwise XOR-folding.
                 int b = r.nextInt();
-                il.add(push(a));
-                il.add(push(b));
-                il.add(push((a ^ b) ^ value));
+                il.add(intLeaf(a, depth));
+                il.add(intLeaf(b, depth));
+                il.add(intLeaf((a ^ b) ^ value, depth));
                 il.add(new InsnNode(Opcodes.IXOR));
                 il.add(new InsnNode(Opcodes.IXOR));
             }
@@ -130,43 +139,63 @@ public class NumberObfuscationTransformer implements Transformer {
         return il;
     }
 
-    private InsnList obfLong(long value) {
+    /**
+     * Return either a single-instruction push of {@code v} (depth 1, the
+     * recursion base case) or another {@link #obfInt} chain at depth - 1.
+     */
+    private InsnList intLeaf(int v, int depth) {
+        InsnList one = new InsnList();
+        if (depth > 1) {
+            one.add(obfInt(v, depth - 1));
+        } else {
+            one.add(push(v));
+        }
+        return one;
+    }
+
+    private InsnList obfLong(long value, int depth) {
         ThreadLocalRandom r = ThreadLocalRandom.current();
         int style = r.nextInt(4);
         long a = r.nextLong();
         InsnList il = new InsnList();
         switch (style) {
             case 0 -> {
-                // value = a XOR (a XOR value)
-                il.add(new LdcInsnNode(a));
-                il.add(new LdcInsnNode(a ^ value));
+                il.add(longLeaf(a, depth));
+                il.add(longLeaf(a ^ value, depth));
                 il.add(new InsnNode(Opcodes.LXOR));
             }
             case 1 -> {
-                // value = (a + value) - a
-                il.add(new LdcInsnNode(a + value));
-                il.add(new LdcInsnNode(a));
+                il.add(longLeaf(a + value, depth));
+                il.add(longLeaf(a, depth));
                 il.add(new InsnNode(Opcodes.LSUB));
             }
             case 2 -> {
-                // value = a - (a - value)
-                il.add(new LdcInsnNode(a));
-                il.add(new LdcInsnNode(a));
-                il.add(new LdcInsnNode(a - value));
+                il.add(longLeaf(a, depth));
+                il.add(longLeaf(a, depth));
+                il.add(longLeaf(a - value, depth));
                 il.add(new InsnNode(Opcodes.LSUB));
                 il.add(new InsnNode(Opcodes.LSUB));
             }
             default -> {
-                // value = a XOR b XOR ((a XOR b) XOR value); three-leg XOR chain
                 long b = r.nextLong();
-                il.add(new LdcInsnNode(a));
-                il.add(new LdcInsnNode(b));
-                il.add(new LdcInsnNode((a ^ b) ^ value));
+                il.add(longLeaf(a, depth));
+                il.add(longLeaf(b, depth));
+                il.add(longLeaf((a ^ b) ^ value, depth));
                 il.add(new InsnNode(Opcodes.LXOR));
                 il.add(new InsnNode(Opcodes.LXOR));
             }
         }
         return il;
+    }
+
+    private InsnList longLeaf(long v, int depth) {
+        InsnList one = new InsnList();
+        if (depth > 1) {
+            one.add(obfLong(v, depth - 1));
+        } else {
+            one.add(new LdcInsnNode(v));
+        }
+        return one;
     }
 
     private AbstractInsnNode push(int v) {

@@ -18,6 +18,7 @@ import org.objectweb.asm.tree.VarInsnNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Random;
 
 /**
@@ -56,31 +57,56 @@ public class JunkCodeInjector implements Transformer {
     private static final Logger log = LoggerFactory.getLogger(JunkCodeInjector.class);
 
     /**
-     * Misleading domain-specific method-name roots. Exposed to
-     * {@link OpaquePredicateTransformer} so it can recognize honeypot
-     * methods emitted on the same class and wire them into opaque
-     * predicates.
+     * Verb prefixes used to compose per-JAR honeypot method names.
+     * Exposed to {@link OpaquePredicateTransformer} so it can recognise
+     * honeypot methods on the same class via prefix-match without having
+     * to share the per-JAR random seed.
+     *
+     * <p>Previously this transformer shipped a fixed set of full names
+     * (e.g. {@code "checkLicense"}) which acted as a free fingerprint
+     * across unrelated JARs. The combinatorial generator
+     * {@link #honeypotVocabulary(ClassPool)} below produces
+     * {@code verbs.length * nouns.length = 18 * 19 = 342} distinct
+     * verb-noun pairs, so collisions across JARs are rare while every
+     * generated name still parses as plausible business logic.
      */
-    public static String[] MISLEADING_NAMES() {
-        return MISLEADING_NAMES.clone();
+    public static String[] honeypotVerbs() {
+        return HONEYPOT_VERBS.clone();
     }
 
-    private static final String[] MISLEADING_NAMES = {
-            "checkLicense",
-            "verifyLicense",
-            "fetchUpdates",
-            "reportTelemetry",
-            "heartbeat",
-            "validateSignature",
-            "verifyIntegrity",
-            "resolveEndpoint",
-            "decodeToken",
-            "refreshSession",
-            "auditAccess",
-            "computeHwid",
-            "pingAuthServer",
-            "rotateApiKey",
+    private static final String[] HONEYPOT_VERBS = {
+            "check", "verify", "validate", "fetch", "report", "audit",
+            "ping", "rotate", "decode", "refresh", "compute", "resolve",
+            "load", "ensure", "guard", "sign", "encrypt", "register",
     };
+
+    private static final String[] HONEYPOT_NOUNS = {
+            "License", "Token", "Signature", "Integrity", "Endpoint",
+            "Session", "Telemetry", "Hwid", "ApiKey", "Heartbeat",
+            "Updates", "Access", "Identity", "Manifest", "Permissions",
+            "Snapshot", "Pipeline", "Channel", "Beacon",
+    };
+
+    /**
+     * Build the per-JAR honeypot vocabulary. Deterministic for a given
+     * input (seeded from the pool's class-name fingerprint) so the same
+     * obfuscation run produces the same names twice in a row -- but two
+     * unrelated JARs end up with different verb-noun pairings, removing
+     * the cross-JAR fingerprint of the older fixed list.
+     */
+    public static List<String> honeypotVocabulary(ClassPool pool) {
+        long seed = poolFingerprint(pool) ^ 0x1A3CA3F4F7E9C5D1L;
+        Random r = new Random(seed);
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        int target = 14;
+        int safety = target * 8;
+        while (out.size() < target && safety-- > 0) {
+            String name = HONEYPOT_VERBS[r.nextInt(HONEYPOT_VERBS.length)]
+                    + HONEYPOT_NOUNS[r.nextInt(HONEYPOT_NOUNS.length)];
+            out.add(name);
+        }
+        return new java.util.ArrayList<>(out);
+    }
 
     /** System properties whose read is plausible for license/anti-cheat logic. */
     private static final String[] HONEYPOT_PROPS = {
@@ -118,6 +144,7 @@ public class JunkCodeInjector implements Transformer {
         // let a reverse engineer fingerprint synthesised methods across
         // entirely unrelated obfuscator outputs.
         Random rnd = new Random(poolFingerprint(pool));
+        List<String> vocabulary = honeypotVocabulary(pool);
         int injected = 0;
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION)) != 0) continue;
@@ -129,7 +156,7 @@ public class JunkCodeInjector implements Transformer {
                 // the old pattern still finds junk (but not only junk).
                 boolean honeypot = rnd.nextBoolean();
                 String root = honeypot
-                        ? MISLEADING_NAMES[rnd.nextInt(MISLEADING_NAMES.length)]
+                        ? vocabulary.get(rnd.nextInt(vocabulary.size()))
                         : "$obfJk";
                 String name = honeypot ? root + "_" + suffix : root + suffix;
                 MethodNode decoy = honeypot
