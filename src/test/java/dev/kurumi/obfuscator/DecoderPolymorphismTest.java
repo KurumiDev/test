@@ -71,9 +71,17 @@ class DecoderPolymorphismTest {
         byte[] out = new byte[raw.length];
         int k = seed;
         for (int i = 0; i < raw.length; i++) {
-            int mask = (variant == 2)
-                    ? ((k ^ (i * 0x9E3779B9)) & 0xFF)
-                    : (k & 0xFF);
+            int mask;
+            switch (variant) {
+                case 2:
+                    mask = (k ^ (i * 0x9E3779B9)) & 0xFF;
+                    break;
+                case 4:
+                    mask = (Integer.rotateLeft(k, 5) ^ (i << 3)) & 0xFF;
+                    break;
+                default:
+                    mask = k & 0xFF;
+            }
             int plain = (raw[i] & 0xFF) ^ mask;
             out[i] = (byte) plain;
             switch (variant) {
@@ -87,6 +95,9 @@ class DecoderPolymorphismTest {
                     break;
                 case 3:
                     k = k * 0x45D9F3B + plain + 0x119DE1F3;
+                    break;
+                case 4:
+                    k = k * 0x6C078965 + i + 1;
                     break;
                 default:
                     k = k * 0x45D9F3B + 0x119DE1F3;
@@ -119,18 +130,17 @@ class DecoderPolymorphismTest {
 
     @Test
     void indyFieldRoundTripsOnAllFourVariants(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
-        // Build 4 (owner, reader) pairs where the owners' internal names
+        // Build (owner, reader) pairs where the owners' internal names
         // deliberately land on different variantFor buckets. This
         // establishes that the emitted decoder is correct for each
         // variant in full end-to-end form (not just the Java-side
         // xorByteStream).
         String[] ownerPool = findNamesForEachVariant();
-        assertNotNull(ownerPool[0]);
-        assertNotNull(ownerPool[1]);
-        assertNotNull(ownerPool[2]);
-        assertNotNull(ownerPool[3]);
+        for (int i = 0; i < ownerPool.length; i++) {
+            assertNotNull(ownerPool[i], "no probe found for variant " + i);
+        }
 
-        for (int v = 0; v < 4; v++) {
+        for (int v = 0; v < DecoderPolymorphism.VARIANT_COUNT; v++) {
             String owner = ownerPool[v];
             String reader = owner + "_Reader";
             Path input = tmp.resolve("poly" + v + ".jar");

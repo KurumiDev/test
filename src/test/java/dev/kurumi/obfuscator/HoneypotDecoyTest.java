@@ -43,11 +43,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class HoneypotDecoyTest {
 
+    // Honeypot names are now generated per-JAR by combining a verb prefix
+    // (from a fixed pool exposed by JunkCodeInjector#honeypotVerbs()) with
+    // a CamelCase noun. So instead of matching a hard-coded list of full
+    // names we match the structural pattern: <known-verb><CapitalLetter><word>_<hex>.
     private static final Pattern HONEYPOT_NAME = Pattern.compile(
-            "^(checkLicense|verifyLicense|fetchUpdates|reportTelemetry|heartbeat|"
-                    + "validateSignature|verifyIntegrity|resolveEndpoint|decodeToken|"
-                    + "refreshSession|auditAccess|computeHwid|pingAuthServer|rotateApiKey)"
-                    + "_[0-9a-f]+$");
+            "^(?:check|verify|validate|fetch|report|audit|ping|rotate|decode|refresh|"
+                    + "compute|resolve|load|ensure|guard|sign|encrypt|register)"
+                    + "[A-Z][A-Za-z]+_[0-9a-f]+$");
 
     @Test
     void emitsAdversarialNamesAndWiresHoneypotsIntoPredicates(
