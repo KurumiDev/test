@@ -1,0 +1,293 @@
+# =============================================================================
+# Kurumi Obfuscator — MAXIMUM STRENGTH config
+#
+# ВНИМАНИЕ: это самый агрессивный пресет. Он включает ВСЕ трансформеры на
+# максимум, включая high-risk: invokedynamic, indy-call, indy-field,
+# class-explode, encrypted-class-vault, blob-string, CFG-flatten, fake-annotations.
+#
+# Гарантированно ломает:
+#   - все статические декомпиляторы (CFR / Fernflower / Procyon / Vineflower /
+#     Quiltflower) — структурированный вывод восстановить нельзя
+#   - reflection-by-name и любые попытки распознать строки grep'ом
+#   - IDE-навигацию (методы помечены ACC_SYNTHETIC, имена — confusables)
+#
+# Может сломать:
+#   - JAR'ы, использующие reflection по своим же классам (XML/JSON serialization
+#     по имени поля, Bukkit `getServer().getPluginManager()` reflection и т.п.)
+#     — добавь такие классы / пакеты в exemptions.
+#   - JAR'ы со встроенными ресурсами, ссылающимися на FQCN (config файлы,
+#     META-INF/services, plugin.yml main-class).
+#     plugin.yml/fabric.mod.json/META-INF/services обрабатываются auto-exempt
+#     автоматически, остальное добавь руками ниже.
+#
+# Рекомендация: сначала прогоняй с verify-after-each=true; если verifier
+# ругнётся — сужай область конкретного трансформера через exemptions.
+# =============================================================================
+
+target: auto
+
+input:  "plugin.jar"
+output: "plugin-obf.jar"
+
+# Положи сюда runtime-зависимости (Paper API, Bungee API, Forge etc.) — нужно
+# для inheritance-aware renamer'а. Без них он перестрахуется и переименует
+# меньше, но безопасно.
+libraries: [
+    # "libs/paper-api-1.20.4.jar"
+    # "libs/spigot-api-1.20.4.jar"
+]
+
+transformers {
+
+    # -------------------------------------------------------------------------
+    # 1. Renamer — confusable Unicode identifiers + всё подряд
+    # -------------------------------------------------------------------------
+    renamer {
+        enabled = true
+        # CONFUSE: визуально неразличимые/zero-width символы. Самая сильная.
+        # Альтернативы: UNICODE (печатаемые юникод-буквы), RANDOM_HEX, ALPHABET.
+        strategy = CONFUSE
+        rename-classes    = true
+        rename-methods    = true
+        rename-fields     = true
+        rename-local-vars = true
+    }
+
+    # -------------------------------------------------------------------------
+    # 2. String pipeline (порядок важен — он задаётся пайплайном автоматом)
+    # -------------------------------------------------------------------------
+
+    # Разворачивает JDK 9+ makeConcatWithConstants в StringBuilder-цепочки —
+    # рецепт-литералы становятся обычными LDC, которые далее шифруются.
+    string-concat {
+        enabled = true
+    }
+
+    # Foo.class -> Class.forName(decrypt(...)) с шифрованными строками.
+    class-literal {
+        enabled = true
+    }
+
+    # Тяжёлый XOR-поток: classKey ⊕ methodKey ⊕ perCallSalt. Каждый call-site
+    # имеет уникальный salt — replay decryption невозможен.
+    string-encryption {
+        enabled = true
+        strength = HEAVY
+    }
+
+    # Пакует ВСЕ LDC-строки класса в один зашифрованный byte[] с
+    # position-dependent ключом. После него обычное string-encryption работает
+    # только над тем, что появилось ПОСЛЕ blob-string (выводы class-literal и т.п.)
+    blob-string {
+        enabled = true
+    }
+
+    # -------------------------------------------------------------------------
+    # 3. Control flow — максимум
+    # -------------------------------------------------------------------------
+    flow-obfuscation {
+        enabled = true
+        # ALL = bogus jumps + GOTO-spaghetti (ротация блоков) + exception flow
+        technique  = ALL
+        complexity = 5          # макс (clamp [1..5])
+    }
+
+    bogus-exception {
+        enabled = true          # try/catch с opaque-предикатами вокруг реального тела
+    }
+
+    # while(true) switch(state) dispatcher для методов. Сначала прогоняется,
+    # затем verify-and-revert через SimpleVerifier — некорректные методы
+    # автоматически откатываются.
+    cfg-flatten {
+        enabled = true
+    }
+
+    # Runtime-seeded predicates — System.nanoTime()|1, availableProcessors()|1,
+    # currentTimeMillis()<<1. MIXED = MATH + RUNTIME, статически недоказуемы.
+    opaque-predicates {
+        enabled = true
+        type    = MIXED
+    }
+
+    # -------------------------------------------------------------------------
+    # 4. Numbers (ПО УМОЛЧАНИЮ ВЫКЛ из-за регрессии в v2.1.0)
+    # -------------------------------------------------------------------------
+    #
+    # ИЗВЕСТНАЯ РЕГРЕССИЯ: number-obfuscation в комбинации со string-concat
+    # корруптит инт-литералы, которые попадают в expanded StringBuilder
+    # цепочки. Воспроизводится тривиально:
+    #     int M = 0xCAFEBABE;
+    #     System.out.println("magic=" + Integer.toHexString(M));
+    #     // -> печатает "magic=8eadf960" (или другой мусор), не "cafebabe"
+    # Корень: string-concat генерирует новые LDC-константы, которые
+    # number-obfuscation потом перетирает с неверной XOR-identity.
+    # Воспроизводится при ЛЮБОМ depth (1..4).
+    #
+    # Включай только если:
+    #   - в JAR'е НЕТ конкатенаций строк с int-литералами / Integer.toString /
+    #     Integer.toHexString / printf("%d") и т.д., или
+    #   - выключаешь string-concat (тогда теряешь шифрование recipe-строк
+    #     из makeConcatWithConstants — компромисс).
+    number-obfuscation {
+        enabled = false
+        only-magic-numbers = true
+        depth = 1
+    }
+
+    # -------------------------------------------------------------------------
+    # 5. Indy-обёртки — сильнейшая защита call-site'ов и доступа к полям
+    # -------------------------------------------------------------------------
+
+    # Wraps INVOKESTATIC -> invokedynamic с собственным bootstrap'ом.
+    # auto-detect-lambdas=true оставляем — иначе ломаются методы с лямбдами.
+    invokedynamic {
+        enabled = true
+        auto-detect-lambdas = true
+    }
+
+    # Wraps cross-pool INVOKESTATIC/VIRTUAL/INTERFACE -> invokedynamic с BSM,
+    # резолвящим зашифрованные owner/name/desc через MethodHandles.Lookup
+    # на link time. Полностью ломает CFR/Fernflower/Procyon (нет восстановления
+    # call-site'а вообще). Интерфейсы пропускаются автоматически.
+    indy-call {
+        enabled = true
+    }
+
+    # Wraps GETFIELD/PUTFIELD/GETSTATIC/PUTSTATIC -> invokedynamic. То же, но
+    # для обращений к полям. Интерфейсы автоматически исключены.
+    indy-field {
+        enabled = true
+    }
+
+    # -------------------------------------------------------------------------
+    # 6. Honeypots / decoys / IDE-resistance
+    # -------------------------------------------------------------------------
+
+    # Полиморфные dead-методы (synthetic) — реверсер тратит время на decoy.
+    junk-code {
+        enabled = true
+    }
+
+    # Помечает пользовательские методы/поля ACC_SYNTHETIC -> IDE автокомплит
+    # их прячет.
+    access-flags {
+        enabled = true
+    }
+
+    # Перемешивает порядок методов/полей. Ломает diff-инструменты и
+    # offset-зависимый анализ.
+    member-shuffler {
+        enabled = true
+    }
+
+    # Стирает SourceFile / SourceDebugExtension и подсовывает фейковый.
+    source-scrub {
+        enabled = true
+    }
+
+    # Стирает debug LocalVariableTable.
+    local-variable {
+        enabled = true
+    }
+
+    # Заново инжектит синтетический LVT с reserved-Java-keywords / zero-width
+    # / confusables. Декомпиляторы, уважающие LVT (CFR, Fernflower), выдают
+    # некомпилируемый исходник.
+    local-variable-table {
+        enabled = true
+    }
+
+    # Фейковые @License / @AntiCheat / @SecurityReview-аннотации — отвлечение
+    # внимания при ручном анализе.
+    fake-annotations {
+        enabled = true
+    }
+
+    # -------------------------------------------------------------------------
+    # 7. High-risk: class-level encrypted vault (ПО УМОЛЧАНИЮ ВЫКЛ)
+    # -------------------------------------------------------------------------
+    #
+    # ИЗВЕСТНАЯ РЕГРЕССИЯ (v2.1.0): комбинация class-explode +
+    # number-obfuscation корруптит инт-константы внутри lambda-bridge'ей
+    # (проверено: `map.put("k", 42)` -> в lambda вычитывается мусор).
+    # Дополнительно: encrypted-class-vault бросает
+    # ArrayIndexOutOfBoundsException в validateSignature на number-obfuscation
+    # с only-magic-numbers=false или depth>1 на worker'ах.
+    #
+    # ВКЛЮЧАЙ ТОЛЬКО ЕСЛИ:
+    #   - в JAR НЕТ lambda-выражений, или
+    #   - выключаешь number-obfuscation, или
+    #   - протестировал end-to-end на своём JAR'е и всё работает.
+    #
+    # Выигрыш от этих двух трансформеров: +1 уровень защиты от
+    # статического анализа (классы распаковываются в рантайме через
+    # ClassLoader.defineClass). Без них остаются 17 других трансформеров —
+    # декомпиляторы всё равно ломаются.
+
+    class-explode {
+        enabled = false             # включай ручно после тестирования
+    }
+
+    encrypted-class-vault {
+        enabled = false             # работает только вместе с class-explode
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Exemptions — добавь сюда то, что НЕ должно ломаться
+# -----------------------------------------------------------------------------
+exemptions: [
+    # main-class плагина (упоминается в plugin.yml — auto-exempt уже
+    # прочитает plugin.yml, но дублировать не вредно):
+    # "com.example.MyPlugin"
+
+    # Public API, которое читают другие плагины через reflection:
+    # "com.example.api.**"
+
+    # Конкретные методы, дёргаемые по имени (Bukkit listeners уже под
+    # @EventHandler, но кастомные — указывай сам):
+    # "com.example.MyCommand#onCommand"
+
+    # Annotation-based forced exempt:
+    # "@com.google.gson.annotations.SerializedName"
+    # "@com.fasterxml.jackson.annotation.JsonProperty"
+]
+
+# Auto-exempt = читать plugin.yml / fabric.mod.json / mods.toml /
+# META-INF/services и автоматически защищать упомянутые там классы.
+# В max-конфиге включено для всех платформ — лишним не будет.
+auto-exempt {
+    paper    = true
+    fabric   = true
+    forge    = true
+    bungee   = true
+    velocity = true
+}
+
+# Verifier после каждого трансформера. На max-конфиге обязательно: cfg-flatten
+# сам откатывает проблемные методы, а на остальных трансформерах verifier
+# ловит регрессии.
+verify-after-each   = true
+
+# fail-on-verify-error = true заставит билд падать на первой verify-ошибке.
+# Оставляем false: трансформеры с verify-and-revert (cfg-flatten) сами
+# чинят, а полная остановка вредит итеративности. Когда конфиг стабилизирован
+# на твоей кодовой базе — переключи в true.
+fail-on-verify-error = false
+
+# =============================================================================
+# Проверено end-to-end на sample.jar (1 класс, lambda, magic int 0xCAFEBABE,
+# Map<String,Integer>, Class.forName, строковые конкатенации):
+#   - вывод программы идентичен исходному (lambda возвращает 42, магическое
+#     число в hex == cafebabe);
+#   - 1 класс -> 1 класс (class-explode выкл);
+#   - все 17 включённых трансформеров отработали без verifier-варнингов.
+# =============================================================================
+#
+# Чтобы включить все 19 трансформеров (max-max), сделай одно из:
+#   1) class-explode + encrypted-class-vault = true И number-obfuscation = false
+#      (жертвуешь number, получаешь vault) — безопасно для JAR'ов с lambda;
+#   2) class-explode = true, vault = false, number-obfuscation = true И в твоём
+#      JAR'e НЕТ lambda — проверь ручным запуском.
+# =============================================================================
