@@ -70,6 +70,8 @@ public class ObfuscatorConfig {
     private final boolean encryptedClassVaultEnabled;
     private final boolean cfgFlattenEnabled;
     private final boolean fakeAnnotationsEnabled;
+    private final boolean antiAgentEnabled;
+    private final boolean watermarkEnabled;
 
     private final boolean localVarEnabled;
 
@@ -119,6 +121,8 @@ public class ObfuscatorConfig {
         this.encryptedClassVaultEnabled = b.encryptedClassVaultEnabled;
         this.cfgFlattenEnabled = b.cfgFlattenEnabled;
         this.fakeAnnotationsEnabled = b.fakeAnnotationsEnabled;
+        this.antiAgentEnabled = b.antiAgentEnabled;
+        this.watermarkEnabled = b.watermarkEnabled;
         this.localVarEnabled = b.localVarEnabled;
         this.exemptions = List.copyOf(b.exemptions);
         this.autoExempt = b.autoExempt;
@@ -184,6 +188,8 @@ public class ObfuscatorConfig {
         if (c.hasPath("transformers.encrypted-class-vault.enabled")) b.encryptedClassVaultEnabled = c.getBoolean("transformers.encrypted-class-vault.enabled");
         if (c.hasPath("transformers.cfg-flatten.enabled")) b.cfgFlattenEnabled = c.getBoolean("transformers.cfg-flatten.enabled");
         if (c.hasPath("transformers.fake-annotations.enabled")) b.fakeAnnotationsEnabled = c.getBoolean("transformers.fake-annotations.enabled");
+        if (c.hasPath("transformers.anti-agent.enabled")) b.antiAgentEnabled = c.getBoolean("transformers.anti-agent.enabled");
+        if (c.hasPath("transformers.watermark.enabled")) b.watermarkEnabled = c.getBoolean("transformers.watermark.enabled");
 
         if (c.hasPath("transformers.local-variable.enabled")) b.localVarEnabled = c.getBoolean("transformers.local-variable.enabled");
 
@@ -258,6 +264,8 @@ public class ObfuscatorConfig {
             case "encrypted-class-vault" -> encryptedClassVaultEnabled;
             case "cfg-flatten" -> cfgFlattenEnabled;
             case "fake-annotations" -> fakeAnnotationsEnabled;
+            case "anti-agent" -> antiAgentEnabled;
+            case "watermark" -> watermarkEnabled;
             default -> true;
         };
     }
@@ -308,6 +316,8 @@ public class ObfuscatorConfig {
         public boolean encryptedClassVaultEnabled = false; // opt-in: moves workers into encrypted payloads
         public boolean cfgFlattenEnabled = false; // opt-in: while(true) switch(state) dispatch
         public boolean fakeAnnotationsEnabled = false; // opt-in: misleading @Generated/@License/@AntiCheat
+        public boolean antiAgentEnabled = false; // opt-in: detects -agentlib:jdwp / -javaagent / -agentpath at <clinit>
+        public boolean watermarkEnabled = false; // opt-in: per-build XOR-encrypted ID embedded as static final field
 
         public boolean localVarEnabled = true;
 

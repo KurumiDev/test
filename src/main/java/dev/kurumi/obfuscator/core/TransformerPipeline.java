@@ -5,6 +5,7 @@ import dev.kurumi.obfuscator.analysis.DependencyAnalyzer;
 import dev.kurumi.obfuscator.analysis.InheritanceAnalyzer;
 import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.transformers.AccessFlagObfuscator;
+import dev.kurumi.obfuscator.transformers.AntiAgentTransformer;
 import dev.kurumi.obfuscator.transformers.BlobStringTransformer;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
 import dev.kurumi.obfuscator.transformers.CfgFlattenTransformer;
@@ -26,6 +27,7 @@ import dev.kurumi.obfuscator.transformers.RenamerTransformer;
 import dev.kurumi.obfuscator.transformers.SourceAttributeScrubber;
 import dev.kurumi.obfuscator.transformers.StringConcatTransformer;
 import dev.kurumi.obfuscator.transformers.StringEncryptionTransformer;
+import dev.kurumi.obfuscator.transformers.WatermarkTransformer;
 import dev.kurumi.obfuscator.verify.BytecodeVerifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,6 +64,25 @@ public class TransformerPipeline {
         //      (string-encryption, flow-obfuscation, opaque-predicates,
         //      indy-call, blob-string ...).
         transformers.add(new ClassExploderTransformer());
+
+        // 2c. Anti-agent: emits a synthetic guard class that detects
+        //      JDWP / -javaagent / -agentpath at <clinit> time and
+        //      Runtime.halt(0)s the process. Runs after renamer (so
+        //      the guard's own name is opaque from inception) and
+        //      before string-encryption / flow-obfuscation /
+        //      number-obfuscation / cfg-flatten so all those passes
+        //      decorate the guard's body and the comparison literals
+        //      get encrypted.
+        transformers.add(new AntiAgentTransformer());
+
+        // 2d. Watermark: per-build XOR-encrypted build-id stamped on
+        //      every owned class as a static final synthetic field.
+        //      Runs early so the field is treated as a normal member
+        //      by every subsequent pass (member-shuffler, access-flags,
+        //      etc.) and so any deobfuscator that round-trips through
+        //      ASM ClassWriter without the field readers preserves it
+        //      (it is a constant value attribute, not just an LDC).
+        transformers.add(new WatermarkTransformer());
 
         // 3. Number obfuscation BEFORE flow, so jump targets stay stable
         transformers.add(new NumberObfuscationTransformer());
