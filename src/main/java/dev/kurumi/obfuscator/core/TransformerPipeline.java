@@ -6,6 +6,7 @@ import dev.kurumi.obfuscator.analysis.InheritanceAnalyzer;
 import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.transformers.AccessFlagObfuscator;
 import dev.kurumi.obfuscator.transformers.AntiAgentTransformer;
+import dev.kurumi.obfuscator.transformers.AntiRecafTransformer;
 import dev.kurumi.obfuscator.transformers.AntiTamperTransformer;
 import dev.kurumi.obfuscator.transformers.BlobStringTransformer;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
@@ -165,7 +166,17 @@ public class TransformerPipeline {
         //      already applied).
         transformers.add(new EncryptedClassVaultTransformer());
 
-        // 15. Anti-tamper integrity manifest. Must be the very last
+        // 15. Anti-Recaf byte-level decorations: opaque unknown
+        //      class & method attributes plus bogus generic
+        //      Signature attributes. JVM ignores both per spec;
+        //      strict bytecode editors (Recaf, Krakatau) and
+        //      decompilers (CFR, Fernflower, Procyon) trip on or
+        //      mis-render them. Must run BEFORE anti-tamper so
+        //      the trap attributes are part of the final bytes
+        //      that anti-tamper hashes into its manifest.
+        transformers.add(new AntiRecafTransformer());
+
+        // 16. Anti-tamper integrity manifest. Must be the very last
         //      pass: it pre-serialises every other class to its
         //      final bytes, SHA-256s them, and bakes the manifest
         //      into a synthetic IntegritySvc helper. Any class added

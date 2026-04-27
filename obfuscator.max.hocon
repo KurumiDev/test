@@ -264,6 +264,20 @@ transformers {
     watermark {
         enabled = true
     }
+
+    # Anti-Recaf byte-level decorations.
+    # Each class gets one unknown class-level Attribute + one
+    # unknown method-level Attribute + a bogus Generic Class
+    # Signature pointing to a phantom class. JVM ignores all three
+    # per JVMS §4.7. Strict bytecode editors (Recaf, Krakatau) and
+    # decompilers (CFR, Fernflower, Procyon) either refuse to load
+    # the class or render <T extends Phantom> in the class header,
+    # which does not compile if the decompiled source is fed back
+    # through javac.
+    # Cost: ~80-100 bytes per class.
+    anti-recaf {
+        enabled = true
+    }
 }
 
 # -----------------------------------------------------------------------------
