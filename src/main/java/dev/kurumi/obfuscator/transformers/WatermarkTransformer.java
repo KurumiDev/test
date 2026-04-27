@@ -69,8 +69,22 @@ public class WatermarkTransformer implements Transformer {
         byte[] xorKey = computeXorKey(prefix);
         String encoded = xorEncodeAsString(buildId.getBytes(java.nio.charset.StandardCharsets.UTF_8), xorKey);
 
-        String fieldName = prefix + FIELD_INFIX
-                + Integer.toHexString(buildId.hashCode() ^ 0x5A5A5A5A);
+        // The hex suffix used to be a thin obfuscation of
+        // {@code Integer.toHexString(buildId.hashCode() ^ 0x5A5A5A5A)},
+        // i.e. it leaked the buildId's hashCode in plaintext. An
+        // adversary couldn't recover the buildId from the hashCode
+        // alone, but the suffix was a trivial fingerprint: every class
+        // in a given build carried the same hex tail, and the tail was
+        // a deterministic function of the build's plaintext id.
+        //
+        // We now derive the suffix from a SHA-256 of {@code prefix}
+        // only (matching the XOR key derivation), so the field name
+        // depends purely on per-JAR synthetic-naming state and reveals
+        // nothing about the build id. The {@code retrace-watermark}
+        // CLI does not use the suffix &mdash; it locates the field by
+        // the {@code wm_} infix and decodes from the {@link FieldNode#value}
+        // alone &mdash; so this change is invisible to the decoder.
+        String fieldName = prefix + FIELD_INFIX + nameSuffix(prefix);
 
         int instrumented = 0;
         for (ClassNode cn : new ArrayList<>(pool.allClassNodes())) {
@@ -164,6 +178,31 @@ public class WatermarkTransformer implements Transformer {
             sb.append(hex);
         }
         return sb.toString();
+    }
+
+    /**
+     * Stable hex tail for the watermark field name. Derived from a
+     * SHA-256 of {@code prefix || 0x5A} so it is a deterministic
+     * function of the per-JAR synthetic prefix &mdash; the same
+     * prefix the decoder recovers from the field name's leading
+     * {@code $<5alnum>} segment &mdash; and reveals nothing about the
+     * build id.
+     *
+     * <p>Eight hex chars are plenty for collision resistance with the
+     * field name's other discriminators (the per-JAR prefix is the
+     * actual identity carrier; the suffix only has to disambiguate
+     * within a single class, which is trivially unique already).
+     */
+    private static String nameSuffix(String prefix) {
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            sha.update(prefix.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            sha.update((byte) 0x5A);
+            byte[] d = sha.digest();
+            return HexFormat.of().formatHex(d, 0, 4);
+        } catch (NoSuchAlgorithmException e) {
+            throw new AssertionError("SHA-256 unavailable", e);
+        }
     }
 
     private static String sha8(String s) {

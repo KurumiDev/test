@@ -72,6 +72,13 @@ class HoneypotDecoyTest {
         b.junkCodeEnabled = true;
         b.opaqueEnabled = true;
         b.opaqueType = ObfuscatorConfig.OpaqueType.MIXED;
+        // Keep the input pool stable so the JunkCodeInjector's
+        // pool-fingerprint-derived RNG produces a deterministic
+        // honeypot/decoy mix. Runtime-keyed number obfuscation
+        // (v2.1.3+) injects a per-class String LDC into <clinit>
+        // which would otherwise pull StringEncryptionTransformer's
+        // probe class into the pool and shift the fingerprint.
+        b.numberRuntimeKeyed = false;
         b.verifyAfterEach = true;
         b.failOnVerifyError = true;
         b.autoExempt = false;
