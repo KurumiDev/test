@@ -154,6 +154,7 @@ public class Main implements Callable<Integer> {
         b.fakeAnnotationsEnabled = loaded.isTransformerEnabled("fake-annotations");
         b.antiAgentEnabled = loaded.isTransformerEnabled("anti-agent");
         b.watermarkEnabled = loaded.isTransformerEnabled("watermark");
+        b.antiTamperEnabled = loaded.isTransformerEnabled("anti-tamper");
         return b;
     }
 
