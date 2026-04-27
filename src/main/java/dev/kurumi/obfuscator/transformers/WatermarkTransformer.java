@@ -14,7 +14,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
-import java.util.Random;
 
 /**
  * Per-build watermark: embeds a XOR-encrypted build identifier into a
@@ -67,7 +66,7 @@ public class WatermarkTransformer implements Transformer {
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         String prefix = SyntheticNaming.prefix(pool);
         String buildId = computeBuildId(pool);
-        byte[] xorKey = computeXorKey(prefix, buildId);
+        byte[] xorKey = computeXorKey(prefix);
         String encoded = xorEncodeAsString(buildId.getBytes(java.nio.charset.StandardCharsets.UTF_8), xorKey);
 
         String fieldName = prefix + FIELD_INFIX
@@ -122,12 +121,28 @@ public class WatermarkTransformer implements Transformer {
                 + "@" + Long.toHexString(ts);
     }
 
-    private static byte[] computeXorKey(String prefix, String buildId) {
+    /**
+     * Derives the XOR key from the per-pool synthetic prefix only.
+     *
+     * <p>The key MUST NOT depend on the plaintext {@code buildId}: the
+     * watermark's whole purpose is to be decoded by the
+     * {@code retrace-watermark} CLI command (and by anybody auditing a
+     * leaked JAR), and that decoder has only the obfuscated JAR in
+     * hand &mdash; not the build-id, which is exactly what it is
+     * trying to recover. If the key depended on the plaintext, the
+     * scheme would be circular: decryption would require the very
+     * value it produces.
+     *
+     * <p>The {@link SyntheticNaming#prefix(ClassPool)} value is a
+     * stable per-input fingerprint and runs after {@code renamer}, so
+     * a decoder that has the JAR can recompute the same prefix the
+     * encoder used and derive the same key.
+     */
+    private static byte[] computeXorKey(String prefix) {
         try {
             MessageDigest sha = MessageDigest.getInstance("SHA-256");
             sha.update(prefix.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             sha.update((byte) 0x9E);
-            sha.update(buildId.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             return sha.digest();
         } catch (NoSuchAlgorithmException e) {
             // SHA-256 is required by every conforming JRE.
@@ -159,5 +174,50 @@ public class WatermarkTransformer implements Transformer {
         } catch (NoSuchAlgorithmException e) {
             return "0000";
         }
+    }
+
+    /* ----------------------- decode-side helpers ---------------------- */
+
+    /**
+     * Inverse of {@link #xorEncodeAsString(byte[], byte[])} keyed off
+     * the per-pool prefix that was written into the field's name. A
+     * watermark field has the shape {@code $<5alnum>wm_<hex>}; the
+     * caller passes the field name and the {@link FieldNode#value}
+     * String, and gets back the original {@code buildId} on success
+     * (or {@code null} on a malformed envelope).
+     *
+     * <p>This is the entry point for the {@code retrace-watermark}
+     * CLI command: scan a JAR for any class file containing such a
+     * field, then call this method to recover the {@code buildId}
+     * that the obfuscator stamped into the build.
+     */
+    public static String decodeWatermark(String fieldName, String fieldValue) {
+        if (fieldName == null || fieldValue == null) return null;
+        if (!fieldValue.startsWith("WM1$")) return null;
+
+        // Field-name shape: $<5 alphanumeric>wm_<hex>. The first 6
+        // chars are the per-JAR synthetic prefix the encoder used.
+        if (fieldName.length() < 6 || fieldName.charAt(0) != '$') return null;
+        int wmIdx = fieldName.indexOf("wm_");
+        if (wmIdx < 1) return null;
+        String prefix = fieldName.substring(0, wmIdx);
+
+        byte[] key = computeXorKey(prefix);
+
+        String hex = fieldValue.substring("WM1$".length());
+        if (hex.isEmpty() || (hex.length() % 2) != 0) return null;
+        byte[] payload = new byte[hex.length() / 2];
+        try {
+            for (int i = 0; i < payload.length; i++) {
+                int hi = Character.digit(hex.charAt(2 * i), 16);
+                int lo = Character.digit(hex.charAt(2 * i + 1), 16);
+                if (hi < 0 || lo < 0) return null;
+                int enc = (hi << 4) | lo;
+                payload[i] = (byte) (enc ^ (key[i % key.length] & 0xFF));
+            }
+        } catch (StringIndexOutOfBoundsException ignored) {
+            return null;
+        }
+        return new String(payload, java.nio.charset.StandardCharsets.UTF_8);
     }
 }

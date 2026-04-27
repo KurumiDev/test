@@ -2,6 +2,7 @@ package dev.kurumi.obfuscator;
 
 import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.core.Obfuscator;
+import dev.kurumi.obfuscator.transformers.WatermarkTransformer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.objectweb.asm.ClassReader;
@@ -92,6 +93,24 @@ class WatermarkTransformerTest {
             Class<?> user = Class.forName("demo.User", true, cl);
             var m = user.getDeclaredMethod("answer");
             assertEquals(Integer.valueOf(42), m.invoke(null));
+        }
+
+        // (6) Round-trip: the embedded watermark must decode to a
+        //     plausible build-id string. Without this, leak tracing
+        //     is impossible -- which is the whole reason the
+        //     watermark exists.
+        String decoded = WatermarkTransformer.decodeWatermark(fieldName, userValue);
+        assertNotNull(decoded, "decodeWatermark must succeed on its own output");
+        assertTrue(decoded.startsWith("kurumi-build:"),
+                "decoded watermark must be a kurumi-build:* identifier; got " + decoded);
+        // Sanity: a wrong field name (different prefix) must NOT
+        //        decode to the same plaintext, otherwise the
+        //        per-prefix key derivation provides no isolation.
+        String tamperedName = "$xxxxxwm_00000000";
+        String wrongDecode = WatermarkTransformer.decodeWatermark(tamperedName, userValue);
+        if (wrongDecode != null) {
+            assertTrue(!decoded.equals(wrongDecode),
+                    "decoder must produce different output for a different prefix");
         }
     }
 
