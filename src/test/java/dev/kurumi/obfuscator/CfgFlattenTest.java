@@ -11,6 +11,7 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.LookupSwitchInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
 import java.net.URL;
@@ -94,10 +95,23 @@ class CfgFlattenTest {
         assertNotNull(target);
 
         boolean hasSwitch = false;
+        boolean hasRuntimeKeyDerivation = false;
         for (AbstractInsnNode a : target.instructions.toArray()) {
-            if (a instanceof LookupSwitchInsnNode) { hasSwitch = true; break; }
+            if (a instanceof LookupSwitchInsnNode) hasSwitch = true;
+            // Runtime-keyed dispatch entry preamble calls
+            // MethodHandles.lookup() to bind the dispatch key to the
+            // runtime class identity. If a future change drops the
+            // binding (back to raw state ids visible in LOOKUPSWITCH
+            // keys), this assertion catches it.
+            if (a instanceof MethodInsnNode min
+                    && "java/lang/invoke/MethodHandles".equals(min.owner)
+                    && "lookup".equals(min.name)) {
+                hasRuntimeKeyDerivation = true;
+            }
         }
         assertTrue(hasSwitch, "flattened method should contain a dispatch LOOKUPSWITCH");
+        assertTrue(hasRuntimeKeyDerivation,
+                "flattened method should derive its dispatch key from the runtime class identity");
 
         try (URLClassLoader cl = new URLClassLoader(
                 new URL[]{output.toUri().toURL()},

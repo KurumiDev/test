@@ -126,6 +126,7 @@ public class ClassExploderTransformer implements Transformer {
 
         int workersEmitted = 0;
         int wireSites = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
 
         for (ClassNode cn : originals) {
             String pkg = packageOf(cn.name);
@@ -140,7 +141,7 @@ public class ClassExploderTransformer implements Transformer {
                 workers.add(w);
                 workersEmitted++;
             }
-            wireSites += wireOriginal(cn, workers, rnd);
+            wireSites += wireOriginal(cn, workers, rnd, pfx);
         }
 
         log.info("Exploded {} original classes into {} worker classes "
@@ -378,13 +379,13 @@ public class ClassExploderTransformer implements Transformer {
     // ------------------------------------------------------------------
     // Wiring: add cross-class opaque predicates on the original.
     // ------------------------------------------------------------------
-    private int wireOriginal(ClassNode cn, List<WorkerRef> workers, Random rnd) {
+    private int wireOriginal(ClassNode cn, List<WorkerRef> workers, Random rnd, String pfx) {
         if (workers.isEmpty()) return 0;
         int sites = 0;
         // List snapshot &mdash; we must not mutate while iterating.
         List<MethodNode> methods = new ArrayList<>(cn.methods);
         for (MethodNode mn : methods) {
-            if (!isMethodWireable(mn)) continue;
+            if (!isMethodWireable(mn, pfx)) continue;
             WorkerRef w = workers.get(rnd.nextInt(workers.size()));
             injectWireSite(mn, w);
             sites++;
@@ -392,10 +393,10 @@ public class ClassExploderTransformer implements Transformer {
         return sites;
     }
 
-    private static boolean isMethodWireable(MethodNode mn) {
+    private static boolean isMethodWireable(MethodNode mn, String pfx) {
         if (mn.instructions == null || mn.instructions.size() < 3) return false;
         if (mn.name.startsWith("<")) return false;
-        if (mn.name.startsWith("$obf")) return false;
+        if (mn.name.startsWith(pfx)) return false;
         if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) return false;
         // Don't wire honeypot decoys (prevents recursion when an exploder
         // worker tries to wire its own method).

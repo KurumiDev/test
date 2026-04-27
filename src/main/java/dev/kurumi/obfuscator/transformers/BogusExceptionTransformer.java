@@ -31,12 +31,13 @@ public class BogusExceptionTransformer implements Transformer {
     @Override
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         int modified = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION)) != 0) continue;
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null || mn.instructions.size() < 2) continue;
                 if (mn.name.startsWith("<")) continue;
-                if (mn.name.startsWith("$obf")) continue;
+                if (mn.name.startsWith(pfx)) continue;
                 if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) continue;
 
                 if (wrap(mn)) modified++;

@@ -57,14 +57,14 @@ public class OpaquePredicateTransformer implements Transformer {
      * single fingerprint while keeping the name deterministic per-class so
      * cross-method reads continue to work.
      */
-    private static String fieldName(String internalName) {
+    private static String fieldName(String internalName, String prefix) {
         long h = 0xCBF29CE484222325L ^ 0x5A17C0DEL;
         for (int i = 0; i < internalName.length(); i++) {
             h ^= internalName.charAt(i);
             h *= 0x100000001B3L;
         }
         char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
-        StringBuilder sb = new StringBuilder("$op");
+        StringBuilder sb = new StringBuilder(prefix);
         for (int i = 0; i < 8; i++) {
             sb.append(alphabet[(int) ((h >>> (i * 8)) & 0x3F) % alphabet.length]);
             h = (h ^ (h >>> 7)) * 0xBF58476D1CE4E5B9L;
@@ -81,26 +81,27 @@ public class OpaquePredicateTransformer implements Transformer {
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         ObfuscatorConfig.OpaqueType type = ctx.config().opaqueType();
         int insertions = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
 
             boolean needSeed = false;
             for (MethodNode mn : cn.methods) {
-                if (!isInjectable(mn)) continue;
-                if (inject(cn, mn, type)) {
+                if (!isInjectable(mn, pfx)) continue;
+                if (inject(cn, mn, type, pfx)) {
                     insertions++;
                     needSeed = true;
                 }
             }
-            if (needSeed) ensureSeedField(cn);
+            if (needSeed) ensureSeedField(cn, pfx);
         }
         log.info("Inserted opaque predicates into {} methods", insertions);
     }
 
-    private static boolean isInjectable(MethodNode mn) {
+    private static boolean isInjectable(MethodNode mn, String pfx) {
         if (mn.instructions == null || mn.instructions.size() < 3) return false;
         if (mn.name.startsWith("<")) return false;     // clinit / init handled separately
-        if (mn.name.startsWith("$obf")) return false;
+        if (mn.name.startsWith(pfx)) return false;
         // Honeypot decoys are also synthetic; injecting an opaque predicate
         // that calls a honeypot from inside a honeypot produces a recursive
         // self-call that blows the stack at runtime.
@@ -109,7 +110,7 @@ public class OpaquePredicateTransformer implements Transformer {
         return true;
     }
 
-    private boolean inject(ClassNode cn, MethodNode mn, ObfuscatorConfig.OpaqueType type) {
+    private boolean inject(ClassNode cn, MethodNode mn, ObfuscatorConfig.OpaqueType type, String pfx) {
         AbstractInsnNode point = mn.instructions.getFirst();
         if (point == null) return false;
         LabelNode skip = new LabelNode();
@@ -126,11 +127,11 @@ public class OpaquePredicateTransformer implements Transformer {
             emitHoneypotPredicate(cn, il, skip, honeypot);
         } else {
             switch (strategy) {
-                case 0 -> emitLowBitPredicate(cn, il, skip);            // $op[0] low bit == 0    ->  false
-                case 1 -> emitAvailProcessorsPredicate(il, skip);       // Runtime procs > 0      ->  true
-                case 2 -> emitCrossSlotXorPredicate(cn, il, skip);      // (slot[0] ^ slot[1]) == slot[3]
-                case 3 -> emitTrailingZerosPredicate(cn, il, skip);     // ntz(odd slot[0]) == 0  ->  true
-                default -> emitSignumProcessorsPredicate(cn, il, skip); // signum(slot[2]) == 1   ->  true
+                case 0 -> emitLowBitPredicate(cn, il, skip, pfx);            // seed[0] low bit == 0    ->  false
+                case 1 -> emitAvailProcessorsPredicate(il, skip);            // Runtime procs > 0       ->  true
+                case 2 -> emitCrossSlotXorPredicate(cn, il, skip, pfx);      // (slot[0] ^ slot[1]) == slot[3]
+                case 3 -> emitTrailingZerosPredicate(cn, il, skip, pfx);     // ntz(odd slot[0]) == 0   ->  true
+                default -> emitSignumProcessorsPredicate(cn, il, skip, pfx); // signum(slot[2]) == 1    ->  true
             }
         }
         il.add(new InsnNode(Opcodes.ACONST_NULL));
@@ -208,8 +209,8 @@ public class OpaquePredicateTransformer implements Transformer {
     }
 
     // Seeded predicate: ($op[0] & 1L) == 0L  →  always false at runtime, unprovable statically.
-    private static void emitLowBitPredicate(ClassNode cn, InsnList il, LabelNode skip) {
-        emitLoadSlot(cn, il, 0);
+    private static void emitLowBitPredicate(ClassNode cn, InsnList il, LabelNode skip, String pfx) {
+        emitLoadSlot(cn, il, 0, pfx);
         il.add(new org.objectweb.asm.tree.LdcInsnNode(1L));
         il.add(new InsnNode(Opcodes.LAND));
         il.add(new InsnNode(Opcodes.LCONST_0));
@@ -248,11 +249,11 @@ public class OpaquePredicateTransformer implements Transformer {
      * particular) collapsed it to a constant comparison and pruned the
      * dead branch.
      */
-    private static void emitCrossSlotXorPredicate(ClassNode cn, InsnList il, LabelNode skip) {
-        emitLoadSlot(cn, il, 0);
-        emitLoadSlot(cn, il, 1);
+    private static void emitCrossSlotXorPredicate(ClassNode cn, InsnList il, LabelNode skip, String pfx) {
+        emitLoadSlot(cn, il, 0, pfx);
+        emitLoadSlot(cn, il, 1, pfx);
         il.add(new InsnNode(Opcodes.LXOR));
-        emitLoadSlot(cn, il, 3);
+        emitLoadSlot(cn, il, 3, pfx);
         il.add(new InsnNode(Opcodes.LCMP));
         // equal -> skip the throw (i.e. always-true branch)
         il.add(new JumpInsnNode(Opcodes.IFEQ, skip));
@@ -275,8 +276,8 @@ public class OpaquePredicateTransformer implements Transformer {
      * {@link Long} static method, so the predicate also pulls in an
      * intrinsic-table lookup at the JIT level rather than just bit-and.
      */
-    private static void emitTrailingZerosPredicate(ClassNode cn, InsnList il, LabelNode skip) {
-        emitLoadSlot(cn, il, 0);
+    private static void emitTrailingZerosPredicate(ClassNode cn, InsnList il, LabelNode skip, String pfx) {
+        emitLoadSlot(cn, il, 0, pfx);
         il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/Long",
                 "numberOfTrailingZeros", "(J)I", false));
         // ntz returns int; compare against 0 directly.
@@ -295,22 +296,22 @@ public class OpaquePredicateTransformer implements Transformer {
      * a static initializer write is well outside what mainstream
      * decompilers attempt during constant folding.
      */
-    private static void emitSignumProcessorsPredicate(ClassNode cn, InsnList il, LabelNode skip) {
-        emitLoadSlot(cn, il, 2);
+    private static void emitSignumProcessorsPredicate(ClassNode cn, InsnList il, LabelNode skip, String pfx) {
+        emitLoadSlot(cn, il, 2, pfx);
         il.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/Long",
                 "signum", "(J)I", false));
         il.add(new InsnNode(Opcodes.ICONST_1));
         il.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, skip));
     }
 
-    private static void emitLoadSlot(ClassNode cn, InsnList il, int slot) {
-        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
+    private static void emitLoadSlot(ClassNode cn, InsnList il, int slot, String pfx) {
+        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name, pfx), FIELD_DESC));
         il.add(new IntInsnNode(Opcodes.BIPUSH, slot));
         il.add(new InsnNode(Opcodes.LALOAD));
     }
 
-    private static void ensureSeedField(ClassNode cn) {
-        String fieldName = fieldName(cn.name);
+    private static void ensureSeedField(ClassNode cn, String pfx) {
+        String fieldName = fieldName(cn.name, pfx);
         boolean present = cn.fields != null && cn.fields.stream()
                 .anyMatch(f -> fieldName.equals(f.name) && FIELD_DESC.equals(f.desc));
         if (!present) {
@@ -338,15 +339,15 @@ public class OpaquePredicateTransformer implements Transformer {
         // new long[SLOTS]
         prefix.add(new IntInsnNode(Opcodes.BIPUSH, SLOTS));
         prefix.add(new IntInsnNode(Opcodes.NEWARRAY, Opcodes.T_LONG));
-        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
+        prefix.add(new FieldInsnNode(Opcodes.PUTSTATIC, cn.name, fieldName(cn.name, pfx), FIELD_DESC));
         // slot 0 = System.nanoTime() | 1L
-        seedSlot(prefix, cn, 0, SeedKind.NANO_ODD);
+        seedSlot(prefix, cn, 0, SeedKind.NANO_ODD, pfx);
         // slot 1 = (System.currentTimeMillis() << 1) | 3L
-        seedSlot(prefix, cn, 1, SeedKind.MILLIS_ODD);
+        seedSlot(prefix, cn, 1, SeedKind.MILLIS_ODD, pfx);
         // slot 2 = availableProcessors() | 1
-        seedSlot(prefix, cn, 2, SeedKind.PROCS_ODD);
+        seedSlot(prefix, cn, 2, SeedKind.PROCS_ODD, pfx);
         // slot 3 = slot[0] ^ slot[1]
-        seedSlot(prefix, cn, 3, SeedKind.MIX);
+        seedSlot(prefix, cn, 3, SeedKind.MIX, pfx);
 
         if (created) {
             clinit.instructions.insertBefore(clinit.instructions.getFirst(), prefix);
@@ -357,8 +358,8 @@ public class OpaquePredicateTransformer implements Transformer {
 
     private enum SeedKind { NANO_ODD, MILLIS_ODD, PROCS_ODD, MIX }
 
-    private static void seedSlot(InsnList il, ClassNode cn, int slot, SeedKind kind) {
-        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
+    private static void seedSlot(InsnList il, ClassNode cn, int slot, SeedKind kind, String pfx) {
+        il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name, pfx), FIELD_DESC));
         il.add(new IntInsnNode(Opcodes.BIPUSH, slot));
         switch (kind) {
             case NANO_ODD -> {
@@ -386,10 +387,10 @@ public class OpaquePredicateTransformer implements Transformer {
             }
             case MIX -> {
                 // arr = $op; arr[3] = arr[0] ^ arr[1];
-                il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
+                il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name, pfx), FIELD_DESC));
                 il.add(new InsnNode(Opcodes.ICONST_0));
                 il.add(new InsnNode(Opcodes.LALOAD));
-                il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name), FIELD_DESC));
+                il.add(new FieldInsnNode(Opcodes.GETSTATIC, cn.name, fieldName(cn.name, pfx), FIELD_DESC));
                 il.add(new InsnNode(Opcodes.ICONST_1));
                 il.add(new InsnNode(Opcodes.LALOAD));
                 il.add(new InsnNode(Opcodes.LXOR));

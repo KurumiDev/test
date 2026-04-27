@@ -145,6 +145,7 @@ public class JunkCodeInjector implements Transformer {
         // entirely unrelated obfuscator outputs.
         Random rnd = new Random(poolFingerprint(pool));
         List<String> vocabulary = honeypotVocabulary(pool);
+        final String pfx = SyntheticNaming.prefix(pool);
         int injected = 0;
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION)) != 0) continue;
@@ -152,12 +153,13 @@ public class JunkCodeInjector implements Transformer {
             for (int i = 0; i < n; i++) {
                 String suffix = Integer.toHexString(rnd.nextInt()).replace("-", "");
                 // Alternate between light and honeypot decoys, and keep one
-                // $obfJk neutral name per class so that anyone grepping for
-                // the old pattern still finds junk (but not only junk).
+                // per-JAR neutral synthetic name per class so a reverser who
+                // greps the per-JAR prefix still finds junk (but not only
+                // junk -- honeypots use plain CamelCase identifiers).
                 boolean honeypot = rnd.nextBoolean();
                 String root = honeypot
                         ? vocabulary.get(rnd.nextInt(vocabulary.size()))
-                        : "$obfJk";
+                        : pfx + "Jk";
                 String name = honeypot ? root + "_" + suffix : root + suffix;
                 MethodNode decoy = honeypot
                         ? buildHoneypot(name, rnd)

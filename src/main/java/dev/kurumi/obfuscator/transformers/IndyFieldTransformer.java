@@ -75,8 +75,8 @@ public class IndyFieldTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(IndyFieldTransformer.class);
 
-    private static final String BSM_PREFIX = "$obfIF";
-    private static final String DEC_PREFIX = "$obfIFd";
+    private static final String BSM_INFIX = "IF";
+    private static final String DEC_INFIX = "IFd";
     private static final String BSM_DESC =
             "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
                     + "Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)"
@@ -120,6 +120,9 @@ public class IndyFieldTransformer implements Transformer {
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         int rewritten = 0;
         int classesTouched = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
+        final String bsmPrefix = pfx + BSM_INFIX;
+        final String decPrefix = pfx + DEC_INFIX;
         for (ClassNode cn : pool.allClassNodes()) {
             if ("module-info".equals(cn.name)) continue;
             // Interfaces need CONSTANT_InterfaceMethodRef_info for their
@@ -132,8 +135,8 @@ public class IndyFieldTransformer implements Transformer {
             // through other rewrites in this pipeline).
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
             String suffix = classSuffix(cn.name);
-            String bsmName = BSM_PREFIX + suffix;
-            String decName = DEC_PREFIX + suffix;
+            String bsmName = bsmPrefix + suffix;
+            String decName = decPrefix + suffix;
             int variant = DecoderPolymorphism.variantFor(cn.name);
             int perClass = 0;
             for (MethodNode mn : cn.methods) {
@@ -170,7 +173,7 @@ public class IndyFieldTransformer implements Transformer {
                 continue;
             }
             if (!pool.containsClass(fin.owner)) continue;
-            if (isSkippableField(fin.name)) continue;
+            if (isSkippableField(fin.name, pool)) continue;
             if (isFinalField(pool, fin)
                     && (op == Opcodes.PUTFIELD || op == Opcodes.PUTSTATIC)) {
                 continue;
@@ -219,9 +222,9 @@ public class IndyFieldTransformer implements Transformer {
         };
     }
 
-    private static boolean isSkippableField(String name) {
+    private static boolean isSkippableField(String name, ClassPool pool) {
         // Our own synthetic fields. Leave them alone.
-        if (name.startsWith("$obf")) return true;
+        if (name.startsWith(SyntheticNaming.prefix(pool))) return true;
         if ("SEED".equals(name)) return true;
         return false;
     }

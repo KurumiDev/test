@@ -35,11 +35,17 @@ public class NumberObfuscationTransformer implements Transformer {
         boolean onlyMagic = ctx.config().numberOnlyMagic();
         int depth = ctx.config().numberDepth();
         int replaced = 0;
+        // Per-JAR synthetic prefix: skip our own emitted synthetics so we
+        // don't, e.g., obfuscate the magic constants baked into the
+        // string-decoder LCG step. Earlier versions hard-coded "$obf"
+        // here; that left a single literal in the codebase pointing at
+        // the obfuscator's own synthetic naming convention.
+        final String pfx = SyntheticNaming.prefix(pool);
         for (ClassNode cn : pool.allClassNodes()) {
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null || mn.instructions.size() == 0) continue;
                 if (mn.name.startsWith("<")) continue;
-                if (mn.name.startsWith("$obf")) continue;
+                if (mn.name.startsWith(pfx)) continue;
                 for (AbstractInsnNode insn : mn.instructions.toArray()) {
                     Integer iv = intConstant(insn);
                     if (iv != null) {

@@ -123,6 +123,7 @@ public class FakeAnnotationTransformer implements Transformer {
         int decoratedClasses = 0;
         int decoratedMethods = 0;
         int decoratedFields = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
 
         for (ClassNode cn : pool.allClassNodes()) {
             // Skip our own injected annotation classes.
@@ -138,14 +139,14 @@ public class FakeAnnotationTransformer implements Transformer {
 
             for (MethodNode mn : new ArrayList<>(cn.methods)) {
                 if (mn.name.startsWith("<")) continue;
-                if (mn.name.startsWith("$obf")) continue;
+                if (mn.name.startsWith(pfx)) continue;
                 if (rng.nextInt(100) < 35) {
                     decorateMethod(mn, rng);
                     decoratedMethods++;
                 }
             }
             for (FieldNode fn : new ArrayList<>(cn.fields)) {
-                if (fn.name.startsWith("$obf") || "SEED".equals(fn.name)) continue;
+                if (fn.name.startsWith(pfx) || "SEED".equals(fn.name)) continue;
                 if (rng.nextInt(100) < 30) {
                     decorateField(fn, rng);
                     decoratedFields++;

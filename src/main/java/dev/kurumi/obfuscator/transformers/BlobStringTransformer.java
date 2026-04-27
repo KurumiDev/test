@@ -54,11 +54,13 @@ public class BlobStringTransformer implements Transformer {
     // the JAR — each class gets its own 8-char suffix derived
     // deterministically from the class name.
     //
-    // Layout: ${PREFIX}${suffix}b  — byte[] blob
-    //         ${PREFIX}${suffix}o  — int[] offsets
-    //         ${PREFIX}${suffix}c  — String[] lazy cache
-    //         ${PREFIX}${suffix}   — static String decoder(int)
-    private static final String PREFIX = "$obf";
+    // Layout: ${prefix}${suffix}b  — byte[] blob
+    //         ${prefix}${suffix}o  — int[] offsets
+    //         ${prefix}${suffix}c  — String[] lazy cache
+    //         ${prefix}${suffix}   — static String decoder(int)
+    // The prefix is per-JAR (see {@link SyntheticNaming}); historically
+    // it was the literal "$obf", which gave anyone holding two
+    // unrelated obfuscated JARs a free cross-input fingerprint.
 
     @Override
     public String name() {
@@ -69,11 +71,12 @@ public class BlobStringTransformer implements Transformer {
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         int totalStrings = 0;
         int classesTouched = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
         for (ClassNode cn : pool.allClassNodes()) {
             if ("module-info".equals(cn.name)) continue;
             if ((cn.access & Opcodes.ACC_INTERFACE) != 0) continue;
             if ((cn.access & Opcodes.ACC_ANNOTATION) != 0) continue;
-            int n = rewriteOne(cn);
+            int n = rewriteOne(cn, pfx);
             if (n > 0) {
                 totalStrings += n;
                 classesTouched++;
@@ -87,13 +90,13 @@ public class BlobStringTransformer implements Transformer {
         }
     }
 
-    private int rewriteOne(ClassNode cn) {
+    private int rewriteOne(ClassNode cn, String prefix) {
         String suffix = randomSuffix(cn.name);
-        String blobField = PREFIX + suffix + "b";
-        String offsetsField = PREFIX + suffix + "o";
-        String cacheField = PREFIX + suffix + "c";
-        String decoder = PREFIX + suffix;
-        String helper = PREFIX + suffix + "h";
+        String blobField = prefix + suffix + "b";
+        String offsetsField = prefix + suffix + "o";
+        String cacheField = prefix + suffix + "c";
+        String decoder = prefix + suffix;
+        String helper = prefix + suffix + "h";
 
         // Phase 1: collect all distinct LDC string constants.
         LinkedHashMap<String, Integer> indexByString = new LinkedHashMap<>();

@@ -38,13 +38,14 @@ public class FlowObfuscationTransformer implements Transformer {
         ObfuscatorConfig.FlowTechnique tech = ctx.config().flowTechnique();
         int complexity = Math.max(1, Math.min(5, ctx.config().flowComplexity()));
         int modified = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
 
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION)) != 0) continue;
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null || mn.instructions.size() < 3) continue;
                 if (mn.name.startsWith("<")) continue;
-                if (mn.name.startsWith("$obf")) continue;
+                if (mn.name.startsWith(pfx)) continue;
                 if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) continue;
 
                 if (apply(mn, tech, complexity)) modified++;

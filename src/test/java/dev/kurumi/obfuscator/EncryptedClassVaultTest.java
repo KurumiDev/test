@@ -83,7 +83,13 @@ class EncryptedClassVaultTest {
             while (e.hasMoreElements()) {
                 JarEntry je = e.nextElement();
                 if ("demo/LicenseGuard_feedf00d.class".equals(je.getName())) workerInJar = true;
-                if (je.getName().startsWith("demo/$obfClassVault_") && je.getName().endsWith(".class")) {
+                // Vault classes have the per-JAR synthetic prefix
+                // ($ + 5 lowercase alphanumeric chars) followed by
+                // "ClassVault_<id>". We don't know the prefix here
+                // (it's a function of the JAR contents), so detect by
+                // the stable infix.
+                if (je.getName().startsWith("demo/$") && je.getName().contains("ClassVault_")
+                        && je.getName().endsWith(".class")) {
                     vaultName = je.getName().substring(0, je.getName().length() - ".class".length()).replace('/', '.');
                 }
                 if (je.getName().startsWith("META-INF/obf/demo/") && je.getName().endsWith(".bin")) {

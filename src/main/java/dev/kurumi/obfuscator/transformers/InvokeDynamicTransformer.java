@@ -28,7 +28,7 @@ public class InvokeDynamicTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(InvokeDynamicTransformer.class);
 
-    private static final String BSM_NAME = "$obfBootstrap";
+    private static final String BSM_SUFFIX = "Bootstrap";
     private static final String BSM_DESC =
             "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;";
 
@@ -44,18 +44,20 @@ public class InvokeDynamicTransformer implements Transformer {
             return;
         }
         int converted = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
+        final String bsmName = pfx + BSM_SUFFIX;
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION)) != 0) continue;
             boolean anyInCn = false;
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null) continue;
-                if (mn.name.equals(BSM_NAME)) continue;
+                if (mn.name.equals(bsmName)) continue;
                 if (mn.name.startsWith("<")) continue;
                 for (AbstractInsnNode insn : mn.instructions.toArray()) {
                     if (insn.getOpcode() == Opcodes.INVOKESTATIC && insn instanceof MethodInsnNode m) {
-                        if (m.name.startsWith("$obf")) continue;
+                        if (m.name.startsWith(pfx)) continue;
                         if (m.owner.startsWith("java/lang/invoke/")) continue;
-                        Handle bsm = new Handle(Opcodes.H_INVOKESTATIC, cn.name, BSM_NAME, BSM_DESC, false);
+                        Handle bsm = new Handle(Opcodes.H_INVOKESTATIC, cn.name, bsmName, BSM_DESC, false);
                         InvokeDynamicInsnNode indy = new InvokeDynamicInsnNode(
                                 m.name + "|" + m.owner,
                                 m.desc,
@@ -66,7 +68,7 @@ public class InvokeDynamicTransformer implements Transformer {
                     }
                 }
             }
-            if (anyInCn) injectBootstrap(cn);
+            if (anyInCn) injectBootstrap(cn, bsmName);
         }
         log.info("Converted {} invokestatic->invokedynamic", converted);
     }
@@ -87,13 +89,13 @@ public class InvokeDynamicTransformer implements Transformer {
         return false;
     }
 
-    private void injectBootstrap(ClassNode cn) {
+    private void injectBootstrap(ClassNode cn, String bsmName) {
         for (MethodNode existing : cn.methods) {
-            if (existing.name.equals(BSM_NAME) && existing.desc.equals(BSM_DESC)) return;
+            if (existing.name.equals(bsmName) && existing.desc.equals(BSM_DESC)) return;
         }
         MethodNode mn = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
-                BSM_NAME, BSM_DESC, null,
+                bsmName, BSM_DESC, null,
                 new String[]{"java/lang/Throwable"});
         InsnList il = new InsnList();
         // Parse name ("method|owner") and resolve
