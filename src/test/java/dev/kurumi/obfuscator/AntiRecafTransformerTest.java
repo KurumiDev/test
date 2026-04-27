@@ -132,6 +132,110 @@ class AntiRecafTransformerTest {
     }
 
     /**
+     * Regression test for the bogus-signature-clobbers-superclass
+     * bug: when a class with no real {@code Signature} attribute
+     * extends a non-{@code Object} class, the injected bogus
+     * Generic Class Signature must still encode the real
+     * superclass so {@link Class#getGenericSuperclass()} returns
+     * the actual parent and not {@code Object}.
+     *
+     * <p>The test builds {@code demo.Sub} extending
+     * {@code demo.Base} (not {@code Object}), runs anti-recaf,
+     * then loads the obfuscated class and asserts that
+     * {@code getSuperclass()} and {@code getGenericSuperclass()}
+     * both report {@code demo.Base}. Without the fix,
+     * {@code getGenericSuperclass()} would return {@code Object}
+     * because the JVM resolves the Signature attribute eagerly
+     * for generic-aware reflection calls.
+     */
+    @Test
+    void bogusSignaturePreservesRealSuperclass(@TempDir Path tmp) throws Exception {
+        Path input = tmp.resolve("in.jar");
+        Path output = tmp.resolve("out.jar");
+
+        writeJar(input, Map.of(
+                "demo/Base.class", buildBase("demo/Base"),
+                "demo/Sub.class", buildSub("demo/Sub", "demo/Base")
+        ));
+
+        ObfuscatorConfig.Builder b = baselineDisabled();
+        b.input = input;
+        b.output = output;
+        b.antiRecafEnabled = true;
+        new Obfuscator(b.build()).run();
+
+        // Confirm the injected Signature attribute on Sub references
+        // demo/Base, NOT java/lang/Object.
+        byte[] subBytes = readJarEntry(output, "demo/Sub.class");
+        ClassNode subNode = new ClassNode();
+        new ClassReader(subBytes).accept(subNode, 0);
+        assertNotNull(subNode.signature, "Sub must have a bogus signature attribute");
+        assertTrue(subNode.signature.contains("Ldemo/Base;"),
+                "bogus signature must encode real superclass demo/Base; got: "
+                        + subNode.signature);
+        assertTrue(subNode.signature.contains("Phantom"),
+                "bogus signature must still carry the phantom type bound; got: "
+                        + subNode.signature);
+
+        // Reflection-level confirmation: load both classes and
+        // assert getGenericSuperclass() returns Base, not Object.
+        try (java.net.URLClassLoader cl = new java.net.URLClassLoader(
+                new java.net.URL[]{output.toUri().toURL()},
+                Thread.currentThread().getContextClassLoader())) {
+            Class<?> base = Class.forName("demo.Base", true, cl);
+            Class<?> sub = Class.forName("demo.Sub", true, cl);
+            assertEquals(base, sub.getSuperclass(),
+                    "raw superclass must still be Base");
+            // getGenericSuperclass() returns either a Class or a
+            // ParameterizedType; in our case the bogus signature
+            // declares no parameterisation on Base, so the result
+            // should be the raw Class itself.
+            java.lang.reflect.Type generic = sub.getGenericSuperclass();
+            assertEquals(base, generic,
+                    "getGenericSuperclass() must return Base, not Object; got: " + generic);
+        }
+    }
+
+    private static byte[] buildBase(String internal) {
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, internal, null,
+                "java/lang/Object", null);
+        // Default constructor.
+        MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+        cw.visitEnd();
+        return cw.toByteArray();
+    }
+
+    private static byte[] buildSub(String internal, String superInternal) {
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, internal, null,
+                superInternal, null);
+        // Default constructor.
+        MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, superInternal, "<init>", "()V", false);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+        // A regular method so the method-level trap finds something
+        // to attach to (otherwise Sub would have only <init>).
+        MethodVisitor mv2 = cw.visitMethod(Opcodes.ACC_PUBLIC, "noop", "()V", null, null);
+        mv2.visitCode();
+        mv2.visitInsn(Opcodes.RETURN);
+        mv2.visitMaxs(0, 0);
+        mv2.visitEnd();
+        cw.visitEnd();
+        return cw.toByteArray();
+    }
+
+    /**
      * Sentinel custom attribute. ASM uses the prototype's
      * {@code type} to match unknown attributes during
      * {@link ClassReader#accept}; with no prototype, ASM still
