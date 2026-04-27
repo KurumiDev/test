@@ -3,6 +3,10 @@ package dev.kurumi.obfuscator.cli;
 import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.core.Obfuscator;
 import dev.kurumi.obfuscator.retrace.RetraceTool;
+import dev.kurumi.obfuscator.transformers.WatermarkTransformer;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -18,7 +22,7 @@ import java.util.concurrent.Callable;
         mixinStandardHelpOptions = true,
         version = "0.1.0",
         description = "Production-ready Java bytecode obfuscator",
-        subcommands = {Main.RetraceSubcommand.class})
+        subcommands = {Main.RetraceSubcommand.class, Main.RetraceWatermarkSubcommand.class})
 public class Main implements Callable<Integer> {
 
     private static final Logger log = LoggerFactory.getLogger(Main.class);
@@ -156,6 +160,48 @@ public class Main implements Callable<Integer> {
     public static void main(String[] args) {
         int code = new CommandLine(new Main()).execute(args);
         System.exit(code);
+    }
+
+    @Command(name = "retrace-watermark", description = "Decode the per-build watermark stamped into an obfuscated JAR")
+    public static class RetraceWatermarkSubcommand implements Callable<Integer> {
+
+        @Option(names = {"--jar"}, required = true, description = "Obfuscated JAR file to inspect")
+        Path jar;
+
+        @Override
+        public Integer call() throws Exception {
+            String found = null;
+            try (java.util.jar.JarFile jf = new java.util.jar.JarFile(jar.toFile())) {
+                java.util.Enumeration<java.util.jar.JarEntry> entries = jf.entries();
+                while (entries.hasMoreElements() && found == null) {
+                    java.util.jar.JarEntry je = entries.nextElement();
+                    if (!je.getName().endsWith(".class")) continue;
+                    byte[] bytes;
+                    try (java.io.InputStream in = jf.getInputStream(je)) {
+                        bytes = in.readAllBytes();
+                    }
+                    ClassNode cn = new ClassNode();
+                    new ClassReader(bytes).accept(cn, ClassReader.SKIP_CODE);
+                    if (cn.fields == null) continue;
+                    for (FieldNode fn : cn.fields) {
+                        if (fn.name.contains("wm_") && fn.value instanceof String s
+                                && s.startsWith("WM1$")) {
+                            String decoded = WatermarkTransformer.decodeWatermark(fn.name, s);
+                            if (decoded != null) {
+                                found = decoded;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (found == null) {
+                System.err.println("No watermark found in " + jar);
+                return 1;
+            }
+            System.out.println(found);
+            return 0;
+        }
     }
 
     @Command(name = "retrace", description = "De-obfuscate a stack trace using a mapping file")
