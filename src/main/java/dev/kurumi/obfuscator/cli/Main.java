@@ -155,6 +155,7 @@ public class Main implements Callable<Integer> {
         b.antiAgentEnabled = loaded.isTransformerEnabled("anti-agent");
         b.watermarkEnabled = loaded.isTransformerEnabled("watermark");
         b.antiTamperEnabled = loaded.isTransformerEnabled("anti-tamper");
+        b.antiRecafEnabled = loaded.isTransformerEnabled("anti-recaf");
         return b;
     }
 
