@@ -244,6 +244,23 @@ transformers {
     # round-trip через деобфускаторы. Если оно ИСЧЕЗАЕТ → JAR прошёл через
     # tool, который дропает unused-fields → это сигнал что бинарник
     # модифицирован.
+    anti-tamper {
+        # Per-build SHA-256 manifest covering every user class,
+        # HMAC-signed with a per-build random key. Each user class's
+        # <clinit> is rewritten to call the synthetic IntegritySvc
+        # helper; the helper's own <clinit> verifies every entry on
+        # first load and Runtime.halt(1)s on any mismatch.
+        # Defends against trivial Recaf-style class-file modification
+        # attacks: change one byte anywhere in any class and the JVM
+        # exits without running the application.
+        # Limits: a determined attacker can patch out the touch()
+        # call sites or the IntegritySvc class itself. This pass is
+        # designed to be layered on top of string-encryption and
+        # indy-call so the helper's literals and method calls are
+        # already obfuscated.
+        enabled = true
+    }
+
     watermark {
         enabled = true
     }

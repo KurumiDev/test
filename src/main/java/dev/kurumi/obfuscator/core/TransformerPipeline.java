@@ -6,6 +6,7 @@ import dev.kurumi.obfuscator.analysis.InheritanceAnalyzer;
 import dev.kurumi.obfuscator.config.ObfuscatorConfig;
 import dev.kurumi.obfuscator.transformers.AccessFlagObfuscator;
 import dev.kurumi.obfuscator.transformers.AntiAgentTransformer;
+import dev.kurumi.obfuscator.transformers.AntiTamperTransformer;
 import dev.kurumi.obfuscator.transformers.BlobStringTransformer;
 import dev.kurumi.obfuscator.transformers.BogusExceptionTransformer;
 import dev.kurumi.obfuscator.transformers.CfgFlattenTransformer;
@@ -163,6 +164,14 @@ public class TransformerPipeline {
         //      blob-strings, polymorphic decoder, confusing locals, all
         //      already applied).
         transformers.add(new EncryptedClassVaultTransformer());
+
+        // 15. Anti-tamper integrity manifest. Must be the very last
+        //      pass: it pre-serialises every other class to its
+        //      final bytes, SHA-256s them, and bakes the manifest
+        //      into a synthetic IntegritySvc helper. Any class added
+        //      after this point would not be covered, and any class
+        //      modified after this point would invalidate its hash.
+        transformers.add(new AntiTamperTransformer());
     }
 
     public void execute(ClassPool pool, ObfuscatorContext ctx) {

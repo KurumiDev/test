@@ -72,6 +72,7 @@ public class ObfuscatorConfig {
     private final boolean fakeAnnotationsEnabled;
     private final boolean antiAgentEnabled;
     private final boolean watermarkEnabled;
+    private final boolean antiTamperEnabled;
 
     private final boolean localVarEnabled;
 
@@ -123,6 +124,7 @@ public class ObfuscatorConfig {
         this.fakeAnnotationsEnabled = b.fakeAnnotationsEnabled;
         this.antiAgentEnabled = b.antiAgentEnabled;
         this.watermarkEnabled = b.watermarkEnabled;
+        this.antiTamperEnabled = b.antiTamperEnabled;
         this.localVarEnabled = b.localVarEnabled;
         this.exemptions = List.copyOf(b.exemptions);
         this.autoExempt = b.autoExempt;
@@ -190,6 +192,7 @@ public class ObfuscatorConfig {
         if (c.hasPath("transformers.fake-annotations.enabled")) b.fakeAnnotationsEnabled = c.getBoolean("transformers.fake-annotations.enabled");
         if (c.hasPath("transformers.anti-agent.enabled")) b.antiAgentEnabled = c.getBoolean("transformers.anti-agent.enabled");
         if (c.hasPath("transformers.watermark.enabled")) b.watermarkEnabled = c.getBoolean("transformers.watermark.enabled");
+        if (c.hasPath("transformers.anti-tamper.enabled")) b.antiTamperEnabled = c.getBoolean("transformers.anti-tamper.enabled");
 
         if (c.hasPath("transformers.local-variable.enabled")) b.localVarEnabled = c.getBoolean("transformers.local-variable.enabled");
 
@@ -266,6 +269,7 @@ public class ObfuscatorConfig {
             case "fake-annotations" -> fakeAnnotationsEnabled;
             case "anti-agent" -> antiAgentEnabled;
             case "watermark" -> watermarkEnabled;
+            case "anti-tamper" -> antiTamperEnabled;
             default -> true;
         };
     }
@@ -318,6 +322,7 @@ public class ObfuscatorConfig {
         public boolean fakeAnnotationsEnabled = false; // opt-in: misleading @Generated/@License/@AntiCheat
         public boolean antiAgentEnabled = false; // opt-in: detects -agentlib:jdwp / -javaagent / -agentpath at <clinit>
         public boolean watermarkEnabled = false; // opt-in: per-build XOR-encrypted ID embedded as static final field
+        public boolean antiTamperEnabled = false; // opt-in: per-build SHA-256 manifest + HMAC, halt(1) on byte mismatch
 
         public boolean localVarEnabled = true;
 
