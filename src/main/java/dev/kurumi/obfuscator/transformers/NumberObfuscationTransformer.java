@@ -122,12 +122,15 @@ public class NumberObfuscationTransformer implements Transformer {
                 il.add(new InsnNode(Opcodes.ISUB));
             }
             case 2 -> {
-                // value = a - (a - value)  (two ISUBs; doesn't algebraically
-                // collapse the way ~(~value) did, so naive constant folders
-                // leave both nodes in the AST).
+                // value = a - ((a + c) - (c + value))
+                //       = a - (a - value) = value
+                // Two ISUBs, three obscured leaves (none of them is `value`
+                // itself), so the constant is hidden even at depth=1 and
+                // doesn't algebraically collapse for naive constant folders.
+                int c = r.nextInt();
                 il.add(intLeaf(a, depth));
-                il.add(intLeaf(a, depth));
-                il.add(intLeaf(a - value, depth));
+                il.add(intLeaf(a + c, depth));
+                il.add(intLeaf(c + value, depth));
                 il.add(new InsnNode(Opcodes.ISUB));
                 il.add(new InsnNode(Opcodes.ISUB));
             }
@@ -176,9 +179,11 @@ public class NumberObfuscationTransformer implements Transformer {
                 il.add(new InsnNode(Opcodes.LSUB));
             }
             case 2 -> {
+                // value = a - ((a + c) - (c + value)); see int variant.
+                long c = r.nextLong();
                 il.add(longLeaf(a, depth));
-                il.add(longLeaf(a, depth));
-                il.add(longLeaf(a - value, depth));
+                il.add(longLeaf(a + c, depth));
+                il.add(longLeaf(c + value, depth));
                 il.add(new InsnNode(Opcodes.LSUB));
                 il.add(new InsnNode(Opcodes.LSUB));
             }

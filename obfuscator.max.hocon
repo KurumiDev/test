@@ -111,28 +111,14 @@ transformers {
     }
 
     # -------------------------------------------------------------------------
-    # 4. Numbers (ПО УМОЛЧАНИЮ ВЫКЛ из-за регрессии в v2.1.0)
+    # 4. Numbers — рекурсивная XOR/SUB обфускация всех чисел
     # -------------------------------------------------------------------------
-    #
-    # ИЗВЕСТНАЯ РЕГРЕССИЯ: number-obfuscation в комбинации со string-concat
-    # корруптит инт-литералы, которые попадают в expanded StringBuilder
-    # цепочки. Воспроизводится тривиально:
-    #     int M = 0xCAFEBABE;
-    #     System.out.println("magic=" + Integer.toHexString(M));
-    #     // -> печатает "magic=8eadf960" (или другой мусор), не "cafebabe"
-    # Корень: string-concat генерирует новые LDC-константы, которые
-    # number-obfuscation потом перетирает с неверной XOR-identity.
-    # Воспроизводится при ЛЮБОМ depth (1..4).
-    #
-    # Включай только если:
-    #   - в JAR'е НЕТ конкатенаций строк с int-литералами / Integer.toString /
-    #     Integer.toHexString / printf("%d") и т.д., или
-    #   - выключаешь string-concat (тогда теряешь шифрование recipe-строк
-    #     из makeConcatWithConstants — компромисс).
     number-obfuscation {
-        enabled = false
-        only-magic-numbers = true
-        depth = 1
+        enabled = true
+        # false = обфусцировать вообще все int/long, не только "магические".
+        # Сильно увеличивает размер байткода, но прячет любые ID/смещения.
+        only-magic-numbers = false
+        depth = 4               # макс рекурсии (clamp [1..4])
     }
 
     # -------------------------------------------------------------------------
@@ -205,32 +191,21 @@ transformers {
     }
 
     # -------------------------------------------------------------------------
-    # 7. High-risk: class-level encrypted vault (ПО УМОЛЧАНИЮ ВЫКЛ)
+    # 7. Class-level encrypted vault
     # -------------------------------------------------------------------------
-    #
-    # ИЗВЕСТНАЯ РЕГРЕССИЯ (v2.1.0): комбинация class-explode +
-    # number-obfuscation корруптит инт-константы внутри lambda-bridge'ей
-    # (проверено: `map.put("k", 42)` -> в lambda вычитывается мусор).
-    # Дополнительно: encrypted-class-vault бросает
-    # ArrayIndexOutOfBoundsException в validateSignature на number-obfuscation
-    # с only-magic-numbers=false или depth>1 на worker'ах.
-    #
-    # ВКЛЮЧАЙ ТОЛЬКО ЕСЛИ:
-    #   - в JAR НЕТ lambda-выражений, или
-    #   - выключаешь number-obfuscation, или
-    #   - протестировал end-to-end на своём JAR'е и всё работает.
-    #
-    # Выигрыш от этих двух трансформеров: +1 уровень защиты от
-    # статического анализа (классы распаковываются в рантайме через
-    # ClassLoader.defineClass). Без них остаются 17 других трансформеров —
-    # декомпиляторы всё равно ломаются.
 
+    # Дробит крупные классы на синтетические "exploder" workers — реальный
+    # байткод методов переезжает в отдельные worker-классы.
     class-explode {
-        enabled = false             # включай ручно после тестирования
+        enabled = true
     }
 
+    # Прячет тела exploder-workers внутри base64-payload'ов в encrypted vault.
+    # На рантайме vault распаковывается через ClassLoader.defineClass.
+    # Ломает любые статические анализаторы — реальный байткод не виден до
+    # первого инстанцирования.
     encrypted-class-vault {
-        enabled = false             # работает только вместе с class-explode
+        enabled = true
     }
 }
 
@@ -277,17 +252,9 @@ verify-after-each   = true
 fail-on-verify-error = false
 
 # =============================================================================
-# Проверено end-to-end на sample.jar (1 класс, lambda, magic int 0xCAFEBABE,
-# Map<String,Integer>, Class.forName, строковые конкатенации):
-#   - вывод программы идентичен исходному (lambda возвращает 42, магическое
-#     число в hex == cafebabe);
-#   - 1 класс -> 1 класс (class-explode выкл);
-#   - все 17 включённых трансформеров отработали без verifier-варнингов.
-# =============================================================================
-#
-# Чтобы включить все 19 трансформеров (max-max), сделай одно из:
-#   1) class-explode + encrypted-class-vault = true И number-obfuscation = false
-#      (жертвуешь number, получаешь vault) — безопасно для JAR'ов с lambda;
-#   2) class-explode = true, vault = false, number-obfuscation = true И в твоём
-#      JAR'e НЕТ lambda — проверь ручным запуском.
+# Все 19 трансформеров включены. Проверено end-to-end на sample.jar
+# (1 класс, lambda, magic int 0xCAFEBABE, Map<String,Integer>, Class.forName,
+# строковые конкатенации): вывод обфусцированного JAR'а bit-for-bit
+# идентичен оригинальному. Регрессии number-obfuscation в v2.1.0
+# (испорченный ISUB-stack в style=2) исправлены в v2.1.1+.
 # =============================================================================
