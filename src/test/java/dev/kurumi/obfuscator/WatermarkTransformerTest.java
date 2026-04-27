@@ -112,6 +112,20 @@ class WatermarkTransformerTest {
             assertTrue(!decoded.equals(wrongDecode),
                     "decoder must produce different output for a different prefix");
         }
+
+        // (7) The field-name suffix must NOT be a plaintext hash of the
+        //     decoded buildId. Earlier builds derived the suffix from
+        //     {@code Integer.toHexString(buildId.hashCode() ^ 0x5A5A5A5A)},
+        //     which leaked a deterministic fingerprint of the plaintext
+        //     buildId into the field name on every class. Now the suffix
+        //     is derived from a SHA-256 of the per-JAR prefix only --
+        //     so the suffix cannot match {@code Integer.toHexString(decoded.hashCode() ^ 0x5A5A5A5A)}.
+        int wmIdx = fieldName.indexOf("wm_");
+        String suffix = fieldName.substring(wmIdx + "wm_".length());
+        String legacySuffix = Integer.toHexString(decoded.hashCode() ^ 0x5A5A5A5A);
+        assertTrue(!suffix.equals(legacySuffix),
+                "field-name suffix must not expose buildId.hashCode() in plaintext; "
+                        + "suffix=" + suffix + " legacy=" + legacySuffix);
     }
 
     private static String readWmField(Path jar, String entryName) throws Exception {
