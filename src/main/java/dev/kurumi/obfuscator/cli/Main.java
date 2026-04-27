@@ -148,6 +148,8 @@ public class Main implements Callable<Integer> {
         b.encryptedClassVaultEnabled = loaded.isTransformerEnabled("encrypted-class-vault");
         b.cfgFlattenEnabled = loaded.isTransformerEnabled("cfg-flatten");
         b.fakeAnnotationsEnabled = loaded.isTransformerEnabled("fake-annotations");
+        b.antiAgentEnabled = loaded.isTransformerEnabled("anti-agent");
+        b.watermarkEnabled = loaded.isTransformerEnabled("watermark");
         return b;
     }
 

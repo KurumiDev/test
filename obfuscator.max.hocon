@@ -207,6 +207,46 @@ transformers {
     encrypted-class-vault {
         enabled = true
     }
+
+    # -------------------------------------------------------------------------
+    # 8. Global runtime defenses — НИ В ОДНОМ open-source обфускаторе нет.
+    # -------------------------------------------------------------------------
+
+    # Anti-agent: на старте КАЖДОГО пользовательского класса (через <clinit>)
+    # читается ManagementFactory.getRuntimeMXBean().getInputArguments() и
+    # ищутся подозрительные префиксы:
+    #   -agentlib:jdwp / -Xrunjdwp / -Xdebug — JDWP-дебаггер
+    #   -javaagent:                          — ЛЮБОЙ Java-агент (Recaf-CLI,
+    #                                          Threadtear, ByteBuddy debug,
+    #                                          BCEL-инструментация, JaCoCo и т.п.)
+    #   -agentpath:                          — нативные JVMTI агенты
+    #
+    # При обнаружении — Runtime.halt(0). Halt(0) специально, чтобы оператор
+    # не понимал что приложение отказалось работать (выглядит как нормальный
+    # exit). Результат кэшируется в volatile-флаге → повторные вызовы
+    # constant-time. Литералы префиксов проходят через string-encryption,
+    # тело check() — через flow-obfuscation/cfg-flatten/number-obfuscation,
+    # имя guard-класса использует per-JAR synthetic prefix.
+    #
+    # ⚠ Если разработчику плагина нужно дебажить через JDWP — выключи это в
+    # dev-конфиге (anti-agent.enabled=false), оставив включённым только в
+    # production-build'е.
+    anti-agent {
+        enabled = true
+    }
+
+    # Per-build watermark: на каждом классе монтируется static final
+    # synthetic String-поле с XOR-зашифрованным build-id. ID уникален на
+    # каждый запуск обфускатора (детерминирован per-input + дата). Если JAR
+    # утёк — по любому одному классу можно расшифровать ID и сматчить с
+    # лицензионным журналом. Поле живёт как ConstantValue attribute, оно
+    # пережёвывается ClassWriter любого инструмента и не теряется при
+    # round-trip через деобфускаторы. Если оно ИСЧЕЗАЕТ → JAR прошёл через
+    # tool, который дропает unused-fields → это сигнал что бинарник
+    # модифицирован.
+    watermark {
+        enabled = true
+    }
 }
 
 # -----------------------------------------------------------------------------
