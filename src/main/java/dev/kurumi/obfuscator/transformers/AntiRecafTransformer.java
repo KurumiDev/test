@@ -98,8 +98,20 @@ public class AntiRecafTransformer implements Transformer {
             // that already have a real signature -- overwriting a
             // legitimate one would risk surprising user code that
             // reflects on it via {@code Class.getGenericSuperclass()}.
+            //
+            // The injected signature must encode the class's REAL
+            // superclass and interfaces; if we hardcoded
+            // {@code Ljava/lang/Object;} here, the JVM would parse
+            // it on first reflection and {@code
+            // Class.getGenericSuperclass()} would return
+            // {@code Object} instead of the actual parent (e.g.
+            // {@code JavaPlugin}, {@code BukkitRunnable}). The
+            // phantom-bounded type parameter is the only piece
+            // intended to mislead decompilers; the rest of the
+            // signature has to mirror reality so reflection on the
+            // class hierarchy keeps working.
             if (cn.signature == null) {
-                cn.signature = bogusClassSignature(prefix);
+                cn.signature = bogusClassSignature(prefix, cn);
             }
 
             // Pick the first regular instance method (skip
@@ -126,23 +138,49 @@ public class AntiRecafTransformer implements Transformer {
     }
 
     /**
-     * Builds a syntactically valid Generic Class Signature that the
-     * JVM ignores but which decompilers will eagerly try to render
-     * in their output.
+     * Builds a syntactically valid Generic Class Signature whose
+     * type-parameter bound is bogus but whose superclass and
+     * superinterface portions mirror the class's real bytecode
+     * inheritance so that reflection (
+     * {@link Class#getGenericSuperclass()},
+     * {@link Class#getGenericInterfaces()}) continues to return
+     * the actual parent classes.
      *
-     * <p>Form: {@code <T:Lprefix$Phantom;>Ljava/lang/Object;} -- a
-     * single type parameter {@code T} bounded by a class that does
-     * not exist anywhere in the JAR or on the classpath. Per JVMS
-     * §4.7.9.1 the bound class reference is a binary class name
-     * checked at compile time, not run time.
+     * <p>Form: {@code <T:Lprefix_Phantom;>L<superName>;<ifaces...>}
+     * where:
+     * <ul>
+     *   <li>{@code T} is a single type parameter bounded by a
+     *       class that does not exist anywhere in the JAR or on
+     *       the classpath -- the actual mislead-the-decompiler
+     *       payload;</li>
+     *   <li>{@code <superName>} is taken verbatim from
+     *       {@link ClassNode#superName};</li>
+     *   <li>{@code <ifaces...>} is one {@code L<i>;} per entry in
+     *       {@link ClassNode#interfaces}.</li>
+     * </ul>
+     *
+     * <p>Per JVMS §4.7.9.1 the bound class reference is a binary
+     * class name checked at compile time, not run time -- so the
+     * phantom name never needs to resolve. The superclass and
+     * interface references DO get resolved by reflection, which is
+     * why we have to use the real ones.
      */
-    private static String bogusClassSignature(String prefix) {
+    private static String bogusClassSignature(String prefix, ClassNode cn) {
         // Strip the leading '$' from the per-JAR synthetic prefix
         // because Signature attributes parse '$' as the inner-class
         // separator, and we don't want a phantom OUTER class
         // accidentally being inferred.
         String clean = prefix.replace("$", "_");
-        return "<T:L" + clean + "Phantom;>Ljava/lang/Object;";
+        StringBuilder sig = new StringBuilder();
+        sig.append("<T:L").append(clean).append("Phantom;>");
+        String superName = cn.superName != null ? cn.superName : "java/lang/Object";
+        sig.append('L').append(superName).append(';');
+        if (cn.interfaces != null) {
+            for (String iface : cn.interfaces) {
+                sig.append('L').append(iface).append(';');
+            }
+        }
+        return sig.toString();
     }
 
     /**
