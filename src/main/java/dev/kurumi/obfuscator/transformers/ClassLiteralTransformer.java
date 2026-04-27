@@ -44,25 +44,27 @@ public class ClassLiteralTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(ClassLiteralTransformer.class);
 
-    private static final String HELPER_PREFIX = "$obfCl";
+    private static final String HELPER_INFIX = "Cl";
     private static final String HELPER_DESC = "(Ljava/lang/String;)Ljava/lang/Class;";
     private static final boolean ENABLE_ARRAYS = true;
 
     /**
-     * Per-class hashed helper name. The prior implementation used a fixed
-     * literal ({@code "$obfCl"}) which gave reverse-engineers a single
-     * grep target to enumerate every class-literal helper across the JAR.
-     * Hashing the owner&apos;s internal name into the suffix preserves
-     * deterministic per-class lookup while removing the global fingerprint.
+     * Per-class hashed helper name with a per-JAR prefix. The original
+     * implementation used a fixed literal ({@code "$obfCl"}) so a
+     * reverser could grep one symbol to find every class-literal helper
+     * in the JAR <em>and</em> recognise the obfuscator from any sample.
+     * Both the leading {@code $obf} and the trailing 6-char hash are now
+     * polymorphic: prefix is per-JAR (different across different inputs)
+     * and suffix is per-class within the JAR.
      */
-    private static String helperName(String internalName) {
+    private static String helperName(String internalName, String prefix) {
         long h = 0xCBF29CE484222325L ^ 0xC1A55L;
         for (int i = 0; i < internalName.length(); i++) {
             h ^= internalName.charAt(i);
             h *= 0x100000001B3L;
         }
         char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
-        StringBuilder sb = new StringBuilder(HELPER_PREFIX);
+        StringBuilder sb = new StringBuilder(prefix).append(HELPER_INFIX);
         for (int i = 0; i < 6; i++) {
             sb.append(alphabet[(int) ((h >>> (i * 8)) & 0x3F) % alphabet.length]);
             h = (h ^ (h >>> 7)) * 0xBF58476D1CE4E5B9L;
@@ -79,10 +81,11 @@ public class ClassLiteralTransformer implements Transformer {
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         int replaced = 0;
         int classesTouched = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
 
-            String helperName = helperName(cn.name);
+            String helperName = helperName(cn.name, pfx);
             boolean touched = false;
             for (MethodNode mn : cn.methods) {
                 if (mn.instructions == null || mn.instructions.size() == 0) continue;

@@ -29,9 +29,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Verifies that per-class decoder names rotate: every class that gets a
  * blob-string or indy-call decoder injected receives a unique 8-character
  * suffix derived from its internal name, defeating grep-based recovery of
- * every decoder in the JAR.
+ * every decoder in the JAR. Also verifies that the per-JAR synthetic
+ * prefix is rotated (no fixed {@code "$obf"} literal anywhere in the
+ * output); legacy fixed names like {@code "$obfBS"} and {@code "$obfD"}
+ * must never appear.
  */
 class NameRotationTest {
+
+    /**
+     * Recognises any synthetic name emitted by the obfuscator: starts with
+     * {@code '$'} followed by 5 lowercase alphanumeric characters (the
+     * per-JAR prefix shape produced by
+     * {@code dev.kurumi.obfuscator.transformers.SyntheticNaming}).
+     */
+    private static boolean isSyntheticName(String name) {
+        if (name.length() < 6 || name.charAt(0) != '$') return false;
+        for (int i = 1; i < 6; i++) {
+            char c = name.charAt(i);
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) return false;
+        }
+        return true;
+    }
 
     @Test
     void decoderNamesRotatePerClass(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
@@ -85,7 +103,7 @@ class NameRotationTest {
                 new ClassReader(new ByteArrayInputStream(bytes)).accept(cn, 0);
                 boolean hasBlobDec = false, hasStrDec = false;
                 for (MethodNode mn : cn.methods) {
-                    if (mn.name.startsWith("$obf")) {
+                    if (isSyntheticName(mn.name)) {
                         allObfMethodNames.add(mn.name);
                         if (mn.desc.equals("(I)Ljava/lang/String;")) hasBlobDec = true;
                         if (mn.desc.endsWith(")Ljava/lang/String;") && mn.desc.startsWith("(Ljava/lang/String;")) {
@@ -94,7 +112,7 @@ class NameRotationTest {
                     }
                 }
                 for (var fn : cn.fields) {
-                    if (fn.name.startsWith("$obf")) allObfFieldNames.add(fn.name);
+                    if (isSyntheticName(fn.name)) allObfFieldNames.add(fn.name);
                 }
                 if (hasBlobDec) classesWithBlobDecoder++;
                 if (hasStrDec) classesWithStringDecoder++;
@@ -126,6 +144,100 @@ class NameRotationTest {
         assertTrue(allObfMethodNames.size() >= 4,
                 "Expected at least 4 distinct $obf* method names (2 classes x 2 decoder kinds); got: "
                         + allObfMethodNames);
+    }
+
+    /**
+     * Two JARs with completely different class names should not share a
+     * synthetic prefix. The previous implementation always emitted
+     * {@code "$obf"} as the prefix, so a reverser holding samples of
+     * obfuscated output across multiple unrelated targets could grep one
+     * literal and recognise every synthetic in every JAR. After the
+     * per-JAR prefix rotation, the 5-character random part of the prefix
+     * must differ for at least <em>some</em> of the synthetic names
+     * across two unrelated inputs.
+     */
+    @Test
+    void syntheticPrefixRotatesPerJar(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        Set<String> namesA = obfuscateAndCollectSynthetics(tmp.resolve("a.jar"), tmp.resolve("a-obf.jar"),
+                "Alpha", "alphaOne", "alphaTwo", "Bravo", "bravoOne", "bravoTwo");
+        Set<String> namesB = obfuscateAndCollectSynthetics(tmp.resolve("b.jar"), tmp.resolve("b-obf.jar"),
+                "Charlie", "charlieOne", "charlieTwo", "Delta", "deltaOne", "deltaTwo");
+
+        // Extract the 6-character prefixes ($ + 5 lowercase alphanumeric)
+        // observed in each JAR. After the rotation, the *set* of prefixes
+        // observed in JAR A should differ from JAR B -- otherwise the
+        // legacy fixed-prefix behaviour is still in effect.
+        Set<String> prefixesA = new HashSet<>();
+        for (String n : namesA) prefixesA.add(n.substring(0, 6));
+        Set<String> prefixesB = new HashSet<>();
+        for (String n : namesB) prefixesB.add(n.substring(0, 6));
+
+        assertFalse(prefixesA.isEmpty(), "JAR A should contain at least one synthetic name");
+        assertFalse(prefixesB.isEmpty(), "JAR B should contain at least one synthetic name");
+        assertNotEquals(prefixesA, prefixesB,
+                "Per-JAR synthetic prefix must differ between unrelated inputs (got " + prefixesA + " vs " + prefixesB + ")");
+    }
+
+    private Set<String> obfuscateAndCollectSynthetics(Path input, Path output,
+                                                      String c1, String c1s1, String c1s2,
+                                                      String c2, String c2s1, String c2s2) throws Exception {
+        try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(input), new Manifest())) {
+            jos.putNextEntry(new JarEntry(c1 + ".class"));
+            jos.write(buildClass(c1, c1s1, c1s2));
+            jos.closeEntry();
+            jos.putNextEntry(new JarEntry(c2 + ".class"));
+            jos.write(buildClass(c2, c2s1, c2s2));
+            jos.closeEntry();
+        }
+
+        ObfuscatorConfig.Builder b = new ObfuscatorConfig.Builder();
+        b.input = input;
+        b.output = output;
+        b.target = ObfuscatorConfig.Target.PLAIN;
+        b.renameClasses = false;
+        b.renameMethods = false;
+        b.renameFields = false;
+        b.stringEncryptionEnabled = true;
+        b.stringStrength = ObfuscatorConfig.StringStrength.HEAVY;
+        b.opaqueEnabled = false;
+        b.flowEnabled = false;
+        b.bogusExceptionEnabled = false;
+        b.numberEnabled = false;
+        b.classLiteralEnabled = false;
+        b.stringConcatEnabled = false;
+        b.invokeDynamicEnabled = false;
+        b.indyCallEnabled = false;
+        b.blobStringEnabled = true;
+        b.junkCodeEnabled = false;
+        b.accessFlagsEnabled = false;
+        b.memberShufflerEnabled = false;
+        b.sourceScrubEnabled = false;
+        b.localVarEnabled = false;
+        b.localVarTableEnabled = false;
+        b.verifyAfterEach = true;
+        b.failOnVerifyError = true;
+        b.autoExempt = false;
+
+        new Obfuscator(b.build()).run();
+
+        Set<String> synthetics = new HashSet<>();
+        try (JarFile jf = new JarFile(output.toFile())) {
+            var entries = jf.entries();
+            while (entries.hasMoreElements()) {
+                JarEntry e = entries.nextElement();
+                if (!e.getName().endsWith(".class")) continue;
+                byte[] bytes = jf.getInputStream(e).readAllBytes();
+                ClassNode cn = new ClassNode();
+                new ClassReader(new ByteArrayInputStream(bytes)).accept(cn, 0);
+                for (MethodNode mn : cn.methods) {
+                    if (isSyntheticName(mn.name)) synthetics.add(mn.name);
+                }
+                for (var fn : cn.fields) {
+                    if (isSyntheticName(fn.name)) synthetics.add(fn.name);
+                }
+            }
+        }
+        return synthetics;
     }
 
     private void writeJar(Path jarPath) throws Exception {

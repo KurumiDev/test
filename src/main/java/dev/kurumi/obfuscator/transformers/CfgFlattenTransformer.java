@@ -17,6 +17,7 @@ import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.LocalVariableNode;
 import org.objectweb.asm.tree.LookupSwitchInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TableSwitchInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
@@ -87,10 +88,11 @@ public class CfgFlattenTransformer implements Transformer {
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
         int flattened = 0;
         int skipped = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
             for (MethodNode mn : cn.methods) {
-                if (!eligible(mn)) { continue; }
+                if (!eligible(mn, pfx)) { continue; }
                 try {
                     if (flatten(cn, mn)) {
                         flattened++;
@@ -110,9 +112,9 @@ public class CfgFlattenTransformer implements Transformer {
         log.info("CFG-flattened {} methods (skipped {})", flattened, skipped);
     }
 
-    private static boolean eligible(MethodNode mn) {
+    private static boolean eligible(MethodNode mn, String pfx) {
         if (mn.name.startsWith("<")) return false;
-        if (mn.name.startsWith("$obf")) return false;
+        if (mn.name.startsWith(pfx)) return false;
         if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) return false;
         if (mn.instructions == null || mn.instructions.size() < MIN_INSNS) return false;
         if (mn.tryCatchBlocks != null && !mn.tryCatchBlocks.isEmpty()) return false;
@@ -225,6 +227,23 @@ public class CfgFlattenTransformer implements Transformer {
             stateId[i] = id;
             blockLabel[i] = new LabelNode();
         }
+        // Per-method dispatch key. Stored values are XORed with this key
+        // and the LOOKUPSWITCH keys are also pre-XORed at compile time, so
+        // the dispatch table looks like noise unless you reconstruct the
+        // key. The key itself is computed at method entry from a literal
+        // {@code k} and the runtime class identity hash {@code h}, where
+        // we emit the literal as {@code k = expectedKey ^ h}. At runtime
+        // {@code k ^ h == expectedKey}; at static-analysis time the
+        // LOOKUPSWITCH keys are not constants relative to the visible
+        // {@code stateId[]} sequence.
+        //
+        // This is the same runtime class-identity binding trick used by
+        // BlobStringTransformer and EncryptedClassVaultTransformer for
+        // their decoder seeds: {@code MethodHandles.lookup().lookupClass()
+        // .getName().hashCode()}.
+        int expectedKey = rng.nextInt() | 1;
+        int classNameHash = cn.name.replace('/', '.').hashCode();
+        int literalKey = expectedKey ^ classNameHash;
         // Remember original start labels so intra-method jumps can be
         // retargeted to the block's new label. We also build a label
         // clone map for AbstractInsnNode.clone() so jumps in cloned
@@ -242,21 +261,44 @@ public class CfgFlattenTransformer implements Transformer {
         }
 
         // State variable slot: first unused local after method args.
+        // Plus a key slot one past it for the runtime-derived dispatch key.
         int stateVar = Math.max(mn.maxLocals, computeInitialLocals(mn));
-        int newMaxLocals = stateVar + 1;
+        int keyVar = stateVar + 1;
+        int newMaxLocals = keyVar + 1;
 
         // --- 4. Build the flat body.
         LabelNode loopStart = new LabelNode();
         LabelNode defaultLabel = new LabelNode();
 
         InsnList out = new InsnList();
-        // entry: state = id of block 0
-        pushInt(out, stateId[0]);
+        // Entry preamble: compute keyVar = literalKey ^ classNameHash via
+        //   MethodHandles.lookup().lookupClass().getName().hashCode().
+        // At runtime keyVar == expectedKey. At static-analysis time, the
+        // value of keyVar is opaque without symbolic execution of
+        // MethodHandles.
+        out.add(new LdcInsnNode(Integer.valueOf(literalKey)));
+        out.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "java/lang/invoke/MethodHandles", "lookup",
+                "()Ljava/lang/invoke/MethodHandles$Lookup;", false));
+        out.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                "java/lang/invoke/MethodHandles$Lookup", "lookupClass",
+                "()Ljava/lang/Class;", false));
+        out.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                "java/lang/Class", "getName", "()Ljava/lang/String;", false));
+        out.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                "java/lang/String", "hashCode", "()I", false));
+        out.add(new InsnNode(Opcodes.IXOR));
+        out.add(new VarInsnNode(Opcodes.ISTORE, keyVar));
+
+        // entry: state = stateId[0] ^ expectedKey  (encoded form already)
+        pushInt(out, stateId[0] ^ expectedKey);
         out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
         out.add(loopStart);
         out.add(new VarInsnNode(Opcodes.ILOAD, stateVar));
-        // Build LOOKUPSWITCH entries sorted by key (JVM requires this).
-        int[] keys = stateId.clone();
+        // Build LOOKUPSWITCH entries with each key XOR-encoded.
+        // The JVM requires keys be sorted; we sort the encoded values.
+        int[] keys = new int[stateId.length];
+        for (int i = 0; i < keys.length; i++) keys[i] = stateId[i] ^ expectedKey;
         Integer[] order = new Integer[keys.length];
         for (int i = 0; i < keys.length; i++) order[i] = i;
         java.util.Arrays.sort(order, (a, b) -> Integer.compare(keys[a], keys[b]));
@@ -298,9 +340,7 @@ public class CfgFlattenTransformer implements Transformer {
                         return false;
                     }
                     if (jin.getOpcode() == Opcodes.GOTO) {
-                        pushInt(out, stateId[targetBlock]);
-                        out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
-                        out.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+                        emitTransition(out, stateId[targetBlock], stateVar, keyVar, loopStart);
                         endsWithTerminator = true;
                     } else {
                         LabelNode trampoline = new LabelNode();
@@ -308,9 +348,7 @@ public class CfgFlattenTransformer implements Transformer {
                         out.add(new JumpInsnNode(jin.getOpcode(), trampoline));
                         out.add(new JumpInsnNode(Opcodes.GOTO, after));
                         out.add(trampoline);
-                        pushInt(out, stateId[targetBlock]);
-                        out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
-                        out.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+                        emitTransition(out, stateId[targetBlock], stateVar, keyVar, loopStart);
                         out.add(after);
                     }
                 } else if (a instanceof TableSwitchInsnNode || a instanceof LookupSwitchInsnNode) {
@@ -331,9 +369,7 @@ public class CfgFlattenTransformer implements Transformer {
             if (!endsWithTerminator) {
                 int next = bi + 1;
                 if (next < blocks.size()) {
-                    pushInt(out, stateId[next]);
-                    out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
-                    out.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+                    emitTransition(out, stateId[next], stateVar, keyVar, loopStart);
                 } else {
                     // Fall off the end — shouldn't happen in valid bytecode,
                     // but if it does, throw to keep the verifier happy.
@@ -363,7 +399,9 @@ public class CfgFlattenTransformer implements Transformer {
         mn.instructions = out;
         mn.maxLocals = newMaxLocals;
         mn.localVariables = null;          // existing ranges are now invalid
-        mn.maxStack = Math.max(mn.maxStack, 2);
+        // Preamble pushes int + Class object + ... up to depth 2; transitions
+        // push int + int and IXOR. Keep slack for safety.
+        mn.maxStack = Math.max(mn.maxStack, 4);
 
         if (!verifyAfterFlatten(cn, mn)) {
             log.debug("cfg-flatten: verify failed on {}.{}, reverting", cn.name, mn.name);
@@ -408,6 +446,21 @@ public class CfgFlattenTransformer implements Transformer {
         } finally {
             mn.maxStack = savedMaxStack;
         }
+    }
+
+    /**
+     * Emits {@code stateVar = stateId[next] ^ keyVar; goto loopStart}.
+     * The XOR with the runtime-derived {@code keyVar} keeps the encoded
+     * state value in {@code stateVar} in lock-step with the LOOKUPSWITCH
+     * keys (which are also encoded as {@code stateId ^ expectedKey}).
+     */
+    private static void emitTransition(InsnList out, int rawStateId, int stateVar,
+                                       int keyVar, LabelNode loopStart) {
+        pushInt(out, rawStateId);
+        out.add(new VarInsnNode(Opcodes.ILOAD, keyVar));
+        out.add(new InsnNode(Opcodes.IXOR));
+        out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
+        out.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
     }
 
     /** Integer push helper that picks the most compact encoding. */

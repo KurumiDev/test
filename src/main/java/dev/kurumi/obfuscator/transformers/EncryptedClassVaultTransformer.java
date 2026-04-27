@@ -74,7 +74,9 @@ public class EncryptedClassVaultTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(EncryptedClassVaultTransformer.class);
 
-    private static final String VAULT_PREFIX = "$obfClassVault_";
+    private static final String VAULT_INFIX = "ClassVault_";
+    private static final String LOAD_SUFFIX = "Load";
+    private static final String DECRYPT_SUFFIX = "Decrypt";
     private static final int VAULT_SEED = 0x5B19DCE5;
 
     // Worker class-name prefixes emitted by {@link ClassExploderTransformer}.
@@ -109,6 +111,10 @@ public class EncryptedClassVaultTransformer implements Transformer {
 
     @Override
     public void transform(ClassPool pool, ObfuscatorContext ctx) {
+        final String pfx = SyntheticNaming.prefix(pool);
+        final String vaultPrefix = pfx + VAULT_INFIX;
+        final String loadName = pfx + LOAD_SUFFIX;
+        final String decryptName = pfx + DECRYPT_SUFFIX;
         Map<String, List<ClassNode>> byPackage = new LinkedHashMap<>();
         for (ClassNode cn : pool.allClassNodes()) {
             if (!isEncryptableWorker(cn.name)) continue;
@@ -136,8 +142,8 @@ public class EncryptedClassVaultTransformer implements Transformer {
             List<ClassNode> selected = candidates.subList(0, Math.min(toEncrypt, candidates.size()));
 
             String vaultInternal = pkg.isEmpty()
-                    ? VAULT_PREFIX + packageSuffix(pkg)
-                    : pkg + "/" + VAULT_PREFIX + packageSuffix(pkg);
+                    ? vaultPrefix + packageSuffix(pkg)
+                    : pkg + "/" + vaultPrefix + packageSuffix(pkg);
             // All payloads in a single vault share the vault's variant; the
             // vault's {@code <clinit>} only has one decoder body, so
             // per-worker variants would need a per-worker dispatch table.
@@ -158,7 +164,8 @@ public class EncryptedClassVaultTransformer implements Transformer {
                 totalEncrypted++;
             }
 
-            ClassNode vault = buildVault(pool, vaultInternal, encryptedPayloads, seeds, selected);
+            ClassNode vault = buildVault(pool, vaultInternal, encryptedPayloads, seeds, selected,
+                    loadName, decryptName);
             pool.addClass(vault);
             vaults++;
 
@@ -224,7 +231,8 @@ public class EncryptedClassVaultTransformer implements Transformer {
      */
     private ClassNode buildVault(ClassPool pool, String vaultInternal,
                                  List<byte[]> encryptedPayloads,
-                                 int[] seeds, List<ClassNode> selected) {
+                                 int[] seeds, List<ClassNode> selected,
+                                 String loadName, String decryptName) {
         ClassNode vault = new ClassNode();
         vault.version = Opcodes.V17;
         vault.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC;
@@ -313,18 +321,18 @@ public class EncryptedClassVaultTransformer implements Transformer {
         cl.add(new InsnNode(Opcodes.IXOR));
         cl.add(new VarInsnNode(Opcodes.ISTORE, 4));
 
-        // byte[] enc = $obfLoad(loader, i)
+        // byte[] enc = ${loadName}(loader, i)
         cl.add(new VarInsnNode(Opcodes.ALOAD, 2));
         cl.add(new VarInsnNode(Opcodes.ILOAD, 3));
         cl.add(new MethodInsnNode(Opcodes.INVOKESTATIC, vault.name,
-                "$obfLoad", "(Ljava/lang/ClassLoader;I)[B", false));
+                loadName, "(Ljava/lang/ClassLoader;I)[B", false));
         cl.add(new VarInsnNode(Opcodes.ASTORE, 5));
 
-        // byte[] plain = $obfDecrypt(enc, effSeed)
+        // byte[] plain = ${decryptName}(enc, effSeed)
         cl.add(new VarInsnNode(Opcodes.ALOAD, 5));
         cl.add(new VarInsnNode(Opcodes.ILOAD, 4));
         cl.add(new MethodInsnNode(Opcodes.INVOKESTATIC, vault.name,
-                "$obfDecrypt", "([BI)[B", false));
+                decryptName, "([BI)[B", false));
         cl.add(new VarInsnNode(Opcodes.ASTORE, 6));
 
         // lookup.defineClass(plain)
@@ -345,8 +353,8 @@ public class EncryptedClassVaultTransformer implements Transformer {
         clinit.maxStack = 6;
         vault.methods.add(clinit);
 
-        vault.methods.add(buildLoad(resourcePrefix));
-        vault.methods.add(buildDecrypt(variant));
+        vault.methods.add(buildLoad(resourcePrefix, loadName));
+        vault.methods.add(buildDecrypt(variant, decryptName));
         return vault;
     }
 
@@ -361,10 +369,10 @@ public class EncryptedClassVaultTransformer implements Transformer {
      *   return out.toByteArray();
      * }
      */
-    private MethodNode buildLoad(String resourcePrefix) {
+    private MethodNode buildLoad(String resourcePrefix, String loadName) {
         MethodNode m = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
-                "$obfLoad", "(Ljava/lang/ClassLoader;I)[B",
+                loadName, "(Ljava/lang/ClassLoader;I)[B",
                 null, new String[]{"java/io/IOException"});
         InsnList il = m.instructions;
         // slots: 0=cl, 1=idx, 2=in, 3=out, 4=buf, 5=r
@@ -456,10 +464,10 @@ public class EncryptedClassVaultTransformer implements Transformer {
      *   return out;
      * }
      */
-    private MethodNode buildDecrypt(int variant) {
+    private MethodNode buildDecrypt(int variant, String decryptName) {
         MethodNode m = new MethodNode(
                 Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
-                "$obfDecrypt", "([BI)[B", null, null);
+                decryptName, "([BI)[B", null, null);
         InsnList il = m.instructions;
         // slots: 0=enc, 1=k, 2=out, 3=i, 4=plain
         il.add(new VarInsnNode(Opcodes.ALOAD, 0));

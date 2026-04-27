@@ -26,12 +26,31 @@ import java.util.List;
  * Replaces {@code LDC} string constants with calls to a synthesized per-class
  * decrypt method. Keys are derived from the class name and, in HEAVY mode,
  * from the enclosing method too.
+ *
+ * <p>The per-byte cipher is delegated to {@link DecoderPolymorphism}: each
+ * class is assigned one of {@link DecoderPolymorphism#VARIANT_COUNT} XOR
+ * stream variants by hashing its internal name, so encrypting the same
+ * plaintext under the same key in two different classes yields ciphertexts
+ * that walk through different state machines (LCG, XORshift32, rotate-LCG,
+ * plaintext-feedback LCG, index-keyed LCG). A reverse engineer who copies
+ * one class's decoder body into a standalone tool will only decrypt that
+ * class's strings; every other class needs a different decoder shape, not
+ * just a different key.
+ *
+ * <p>Replaces the previous fixed {@code k = k * 1103515245 + 12345; out[i] =
+ * in[i] ^ (k &gt;&gt;&gt; 16)} cipher, which was a single shared shape across
+ * the entire JAR -- exactly the cross-class fingerprint
+ * {@code DecoderPolymorphism} was introduced to remove.
  */
 public class StringEncryptionTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(StringEncryptionTransformer.class);
 
-    private static final String DECRYPT_PREFIX = "$obf";
+    // The leading prefix is now per-JAR (computed once per pool by
+    // {@link SyntheticNaming#prefix}). What was historically a fixed
+    // "$obf" prefix gave reverse engineers a single literal to grep
+    // across multiple obfuscator outputs; rotating it per-JAR removes
+    // that cross-JAR fingerprint.
     private static final String DECRYPT_DESC_STANDARD = "(Ljava/lang/String;)Ljava/lang/String;";
     private static final String DECRYPT_DESC_HEAVY = "(Ljava/lang/String;I)Ljava/lang/String;";
 
@@ -41,14 +60,16 @@ public class StringEncryptionTransformer implements Transformer {
      * the same JAR. Prevents a reverse engineer from grepping for a known
      * symbol like {@code $obfD} to find every decryptor.
      */
-    private static String decryptName(String internalName, ObfuscatorConfig.StringStrength strength) {
+    private static String decryptName(String internalName,
+                                      ObfuscatorConfig.StringStrength strength,
+                                      String prefix) {
         long h = 0xCBF29CE484222325L ^ (strength == ObfuscatorConfig.StringStrength.HEAVY ? 0xAL : 0x5L);
         for (int i = 0; i < internalName.length(); i++) {
             h ^= internalName.charAt(i);
             h *= 0x100000001B3L;
         }
         char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
-        StringBuilder sb = new StringBuilder(DECRYPT_PREFIX);
+        StringBuilder sb = new StringBuilder(prefix);
         for (int i = 0; i < 8; i++) {
             sb.append(alphabet[(int) ((h >>> (i * 8)) & 0x3F) % alphabet.length]);
             h = (h ^ (h >>> 7)) * 0xBF58476D1CE4E5B9L;
@@ -66,6 +87,7 @@ public class StringEncryptionTransformer implements Transformer {
         ObfuscatorConfig.StringStrength strength = ctx.config().stringStrength();
         int classesTouched = 0;
         int stringsEncrypted = 0;
+        final String pfx = SyntheticNaming.prefix(pool);
         for (ClassNode cn : pool.allClassNodes()) {
             if ((cn.access & Opcodes.ACC_ANNOTATION) != 0) continue;
             if (cn.name.endsWith("/package-info")) continue;
@@ -77,7 +99,8 @@ public class StringEncryptionTransformer implements Transformer {
             // class-identity binding already used by BlobStringTransformer
             // and EncryptedClassVaultTransformer.
             int runtimeBinding = cn.name.replace('/', '.').hashCode();
-            String decryptName = decryptName(cn.name, strength);
+            int variant = DecoderPolymorphism.variantFor(cn.name);
+            String decryptName = decryptName(cn.name, strength, pfx);
             boolean classTouched = false;
 
             for (MethodNode mn : cn.methods) {
@@ -102,7 +125,7 @@ public class StringEncryptionTransformer implements Transformer {
                     String original = (String) ldc.cst;
                     int perCallSalt = strength == ObfuscatorConfig.StringStrength.HEAVY
                             ? java.util.concurrent.ThreadLocalRandom.current().nextInt() : 0;
-                    String encoded = encode(original, classKey + methodKey + perCallSalt + runtimeBinding);
+                    String encoded = encode(original, classKey + methodKey + perCallSalt + runtimeBinding, variant);
                     ldc.cst = encoded;
                     InsnList replacement = new InsnList();
                     String desc = strength == ObfuscatorConfig.StringStrength.HEAVY ? DECRYPT_DESC_HEAVY : DECRYPT_DESC_STANDARD;
@@ -120,7 +143,7 @@ public class StringEncryptionTransformer implements Transformer {
             }
 
             if (classTouched) {
-                injectDecryptMethod(cn, classKey, strength, decryptName);
+                injectDecryptMethod(cn, classKey, strength, decryptName, variant);
                 classesTouched++;
             }
         }
@@ -144,14 +167,9 @@ public class StringEncryptionTransformer implements Transformer {
         return h;
     }
 
-    private String encode(String original, int key) {
+    private String encode(String original, int key, int variant) {
         byte[] in = original.getBytes(StandardCharsets.UTF_8);
-        byte[] out = new byte[in.length];
-        int k = key;
-        for (int i = 0; i < in.length; i++) {
-            k = k * 1103515245 + 12345;
-            out[i] = (byte) (in[i] ^ (k >>> 16));
-        }
+        byte[] out = DecoderPolymorphism.xorByteStream(in, key, variant);
         return Base64.getEncoder().encodeToString(out);
     }
 
@@ -162,8 +180,8 @@ public class StringEncryptionTransformer implements Transformer {
         return new LdcInsnNode(value);
     }
 
-    private void injectDecryptMethod(ClassNode cn, int classKey, ObfuscatorConfig.StringStrength strength, String name) {
-        boolean iface = (cn.access & Opcodes.ACC_INTERFACE) != 0;
+    private void injectDecryptMethod(ClassNode cn, int classKey, ObfuscatorConfig.StringStrength strength,
+                                     String name, int variant) {
         int access = Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC;
         String desc = strength == ObfuscatorConfig.StringStrength.HEAVY ? DECRYPT_DESC_HEAVY : DECRYPT_DESC_STANDARD;
         for (MethodNode existing : cn.methods) {
@@ -210,6 +228,7 @@ public class StringEncryptionTransformer implements Transformer {
 
         // for (int i = 0; i < data.length; i++)
         int iVar = kVar + 1;
+        int plainVar = iVar + 1;
         il.add(new InsnNode(Opcodes.ICONST_0));
         il.add(new VarInsnNode(Opcodes.ISTORE, iVar));
 
@@ -221,27 +240,26 @@ public class StringEncryptionTransformer implements Transformer {
         il.add(new InsnNode(Opcodes.ARRAYLENGTH));
         il.add(new org.objectweb.asm.tree.JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
-        //   k = k * 1103515245 + 12345;
-        il.add(new VarInsnNode(Opcodes.ILOAD, kVar));
-        il.add(new LdcInsnNode(1103515245));
-        il.add(new InsnNode(Opcodes.IMUL));
-        il.add(new LdcInsnNode(12345));
-        il.add(new InsnNode(Opcodes.IADD));
-        il.add(new VarInsnNode(Opcodes.ISTORE, kVar));
-
-        //   data[i] ^= (byte)(k >>> 16)
+        // plain = (data[i] & 0xFF) ^ mask(k, i)
         il.add(new VarInsnNode(Opcodes.ALOAD, dataVar));
         il.add(new VarInsnNode(Opcodes.ILOAD, iVar));
-        il.add(new InsnNode(Opcodes.DUP2));
         il.add(new InsnNode(Opcodes.BALOAD));
-        il.add(new VarInsnNode(Opcodes.ILOAD, kVar));
-        il.add(new IntInsnNode(Opcodes.BIPUSH, 16));
-        il.add(new InsnNode(Opcodes.IUSHR));
+        il.add(new IntInsnNode(Opcodes.SIPUSH, 0xFF));
+        il.add(new InsnNode(Opcodes.IAND));
+        DecoderPolymorphism.emitMask(il, kVar, iVar, variant);
         il.add(new InsnNode(Opcodes.IXOR));
+        il.add(new VarInsnNode(Opcodes.ISTORE, plainVar));
+
+        // data[i] = (byte) plain
+        il.add(new VarInsnNode(Opcodes.ALOAD, dataVar));
+        il.add(new VarInsnNode(Opcodes.ILOAD, iVar));
+        il.add(new VarInsnNode(Opcodes.ILOAD, plainVar));
         il.add(new InsnNode(Opcodes.I2B));
         il.add(new InsnNode(Opcodes.BASTORE));
 
-        //   i++
+        // k = keyUpdate(k, i, plain, variant)
+        DecoderPolymorphism.emitKeyUpdate(il, kVar, iVar, plainVar, variant);
+
         il.add(new org.objectweb.asm.tree.IincInsnNode(iVar, 1));
         il.add(new org.objectweb.asm.tree.JumpInsnNode(Opcodes.GOTO, loopStart));
         il.add(loopEnd);
@@ -257,7 +275,7 @@ public class StringEncryptionTransformer implements Transformer {
         il.add(new InsnNode(Opcodes.ARETURN));
 
         mn.instructions = il;
-        mn.maxLocals = iVar + 2;
+        mn.maxLocals = plainVar + 1;
         mn.maxStack = 6;
         cn.methods.add(mn);
 

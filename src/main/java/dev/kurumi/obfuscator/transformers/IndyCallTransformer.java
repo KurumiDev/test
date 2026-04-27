@@ -45,8 +45,8 @@ public class IndyCallTransformer implements Transformer {
 
     private static final Logger log = LoggerFactory.getLogger(IndyCallTransformer.class);
 
-    private static final String BSM_PREFIX = "$obfIC";
-    private static final String DEC_PREFIX = "$obfICd";
+    private static final String BSM_INFIX = "IC";
+    private static final String DEC_INFIX = "ICd";
     private static final String BSM_DESC =
             "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
                     + "Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)"
@@ -85,6 +85,9 @@ public class IndyCallTransformer implements Transformer {
         int rewritten = 0;
         int classesTouched = 0;
         int[] variantCounts = new int[DecoderPolymorphism.VARIANT_COUNT];
+        final String pfx = SyntheticNaming.prefix(pool);
+        final String bsmPrefix = pfx + BSM_INFIX;
+        final String decPrefix = pfx + DEC_INFIX;
         for (ClassNode cn : pool.allClassNodes()) {
             if ("module-info".equals(cn.name)) continue;
             // The BSM Handle below is emitted with isInterface=false,
@@ -97,8 +100,8 @@ public class IndyCallTransformer implements Transformer {
             // so we skip them.
             if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ANNOTATION | Opcodes.ACC_MODULE)) != 0) continue;
             String suffix = classSuffix(cn.name);
-            String bsmName = BSM_PREFIX + suffix;
-            String decName = DEC_PREFIX + suffix;
+            String bsmName = bsmPrefix + suffix;
+            String decName = decPrefix + suffix;
             int variant = DecoderPolymorphism.variantFor(cn.name);
             int perClass = 0;
             for (MethodNode mn : cn.methods) {
