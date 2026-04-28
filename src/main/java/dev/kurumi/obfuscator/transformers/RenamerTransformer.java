@@ -297,10 +297,17 @@ public class RenamerTransformer implements Transformer {
                 if (ic.outerName != null && pinned.contains(ic.outerName)) return true;
             }
         }
+        // Walk every '$'-segment, not just the last one. NestHost (JEP 181)
+        // would carry the outermost class for us, but pre-Java-11 classfiles
+        // don't have that attribute and InnerClasses' outerName only points
+        // to the direct parent. So `Outer$Inner$Deep` would otherwise miss
+        // the pinned `Outer` because we never added `Outer$Inner` to the
+        // pinned set (it was only skipped via this same check, transitively).
         int dollar = cn.name.lastIndexOf('$');
-        if (dollar > 0) {
+        while (dollar > 0) {
             String outer = cn.name.substring(0, dollar);
             if (pinned.contains(outer)) return true;
+            dollar = cn.name.lastIndexOf('$', dollar - 1);
         }
         return false;
     }
@@ -325,10 +332,13 @@ public class RenamerTransformer implements Transformer {
                 if (ic.outerName != null && exemptName(ctx, ann, ic.outerName)) return true;
             }
         }
+        // See isInnerOfPinned: walk every '$'-segment for multi-level
+        // nesting on pre-Java-11 classfiles where NestHost is missing.
         int dollar = cn.name.lastIndexOf('$');
-        if (dollar > 0) {
+        while (dollar > 0) {
             String outer = cn.name.substring(0, dollar);
             if (exemptName(ctx, ann, outer)) return true;
+            dollar = cn.name.lastIndexOf('$', dollar - 1);
         }
         return false;
     }
