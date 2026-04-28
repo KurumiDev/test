@@ -11,6 +11,7 @@ import org.objectweb.asm.commons.ClassRemapper;
 import org.objectweb.asm.commons.SimpleRemapper;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.InnerClassNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -239,12 +240,57 @@ public class RenamerTransformer implements Transformer {
             if (referenced.contains(cn.name)) continue;
             if (ctx.exemptions().isClassExempt(cn.name)) continue;
             if (ann != null && ann.isClassExempt(cn.name)) continue;
+            // Inner classes inherit the exempt status of their enclosing class.
+            // Otherwise we'd move e.g. Outer$1 (anonymous, package-private by
+            // javac convention) into 'o/aq' while Outer stays put — and then
+            // any code in Outer that touches Outer$1 raises IllegalAccessError
+            // because the two classes are no longer in the same package and
+            // the JEP 181 nest membership got broken by the move.
+            if (isInnerOfExempt(cn, ctx, ann)) continue;
             if (hasExemptSuperType(cn.name, exemptSupers, inh)) continue;
             // preserve enum / record classes' visible structure: still safe to rename, but skip module-info
             if ((cn.access & Opcodes.ACC_MODULE) != 0) continue;
             String newName = "o/" + gen.next();
             mapping.put(cn.name, newName);
         }
+    }
+
+    /**
+     * Returns true if {@code cn} is an inner / nested / anonymous / local
+     * class whose enclosing class is exempt. Looks at all four sources of
+     * outer-class info ASM exposes:
+     *
+     * <ol>
+     *   <li>{@code NestHost} attribute (JEP 181) — most reliable;</li>
+     *   <li>{@code EnclosingMethod} attribute ({@code outerClass}) — set
+     *       for local / anonymous classes;</li>
+     *   <li>{@code InnerClasses} attribute ({@code innerClasses}) — present
+     *       on all nested classes for binary-compatibility reasons;</li>
+     *   <li>{@code $}-separated name heuristic — last-resort, covers cases
+     *       where the class file has been stripped of debug attributes.</li>
+     * </ol>
+     */
+    private boolean isInnerOfExempt(ClassNode cn, ObfuscatorContext ctx, AnnotationScanner ann) {
+        if (cn.nestHostClass != null && exemptName(ctx, ann, cn.nestHostClass)) return true;
+        if (cn.outerClass != null && exemptName(ctx, ann, cn.outerClass)) return true;
+        if (cn.innerClasses != null) {
+            for (InnerClassNode ic : cn.innerClasses) {
+                if (ic.name == null) continue;
+                if (!ic.name.equals(cn.name)) continue;
+                if (ic.outerName != null && exemptName(ctx, ann, ic.outerName)) return true;
+            }
+        }
+        int dollar = cn.name.lastIndexOf('$');
+        if (dollar > 0) {
+            String outer = cn.name.substring(0, dollar);
+            if (exemptName(ctx, ann, outer)) return true;
+        }
+        return false;
+    }
+
+    private static boolean exemptName(ObfuscatorContext ctx, AnnotationScanner ann, String internalName) {
+        if (ctx.exemptions().isClassExempt(internalName)) return true;
+        return ann != null && ann.isClassExempt(internalName);
     }
 
     private boolean hasExemptSuperType(String internal, Set<String> exemptSupers, InheritanceAnalyzer inh) {
@@ -358,6 +404,10 @@ public class RenamerTransformer implements Transformer {
             // sources used by buildClassMapping.
             if (ctx.exemptions().isClassExempt(cn.name)) continue;
             if (ann != null && ann.isClassExempt(cn.name)) continue;
+            // Same transitive nesting rule as buildClassMapping: an inner
+            // class of an exempt outer must not have its members renamed
+            // either, otherwise reflective lookups in the outer class break.
+            if (isInnerOfExempt(cn, ctx, ann)) continue;
             for (MethodNode mn : cn.methods) {
                 if (isVirtual(mn)) continue;
                 if (mn.name.startsWith("<")) continue;
@@ -381,6 +431,9 @@ public class RenamerTransformer implements Transformer {
             // annotation-driven class exempts.
             if (ctx.exemptions().isClassExempt(mk.owner)) return true;
             if (ann != null && ann.isClassExempt(mk.owner)) return true;
+            // Owner class is an inner class of an exempt outer.
+            ClassNode ownerNode = pool.classes().get(mk.owner);
+            if (ownerNode != null && isInnerOfExempt(ownerNode, ctx, ann)) return true;
             if (ctx.exemptions().isMethodExempt(mk.owner, mk.name, mk.desc)) return true;
             if (ann != null && ann.isMethodExempt(mk.owner, mk.name, mk.desc)) return true;
             if (mk.name.startsWith("<")) return true;
@@ -474,6 +527,11 @@ public class RenamerTransformer implements Transformer {
             // both config-rule and annotation-driven class exempts.
             if (ctx.exemptions().isClassExempt(cn.name)) continue;
             if (ann != null && ann.isClassExempt(cn.name)) continue;
+            // Inner-of-exempt protection: same reasoning as the class-rename
+            // loop. Otherwise inner classes of an exempt class get their
+            // synthetic this$0 / this$1 fields renamed and outer-class code
+            // (which keeps original names) breaks at runtime.
+            if (isInnerOfExempt(cn, ctx, ann)) continue;
             NameGenerator perClass = new NameGenerator(strat);
             for (FieldNode fn : cn.fields) {
                 if (ann != null && ann.isFieldExempt(cn.name, fn.name, fn.desc)) continue;
