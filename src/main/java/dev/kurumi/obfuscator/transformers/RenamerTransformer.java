@@ -11,6 +11,7 @@ import org.objectweb.asm.commons.ClassRemapper;
 import org.objectweb.asm.commons.SimpleRemapper;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.InnerClassNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -235,16 +236,116 @@ public class RenamerTransformer implements Transformer {
         Set<String> exemptSupers = ctx.exemptions().exemptClassSuperTypes();
         AnnotationScanner ann = ctx.annotations();
 
+        // Pre-compute the full set of class names that will NOT be renamed.
+        // We need this before deciding inner-of-pinned, otherwise we'd only
+        // catch the config / annotation exempt subset and miss classes
+        // pinned via plugin.yml resources or by extending an exempt-super
+        // type (e.g. JavaPlugin). Plugin main classes — the canonical
+        // example — are almost never explicitly listed in `exemptions {}`,
+        // they're pinned through `plugin.yml#main` and through ancestor
+        // JavaPlugin: without seeing those reasons, anonymous inner classes
+        // (`new BukkitRunnable() { … }` → `MyPlugin$1`) get moved into
+        // `o/*` while `MyPlugin` stays put, breaking package-private access.
+        Set<String> pinnedClasses = new HashSet<>();
         for (ClassNode cn : pool.allClassNodes()) {
-            if (referenced.contains(cn.name)) continue;
-            if (ctx.exemptions().isClassExempt(cn.name)) continue;
-            if (ann != null && ann.isClassExempt(cn.name)) continue;
-            if (hasExemptSuperType(cn.name, exemptSupers, inh)) continue;
-            // preserve enum / record classes' visible structure: still safe to rename, but skip module-info
-            if ((cn.access & Opcodes.ACC_MODULE) != 0) continue;
+            if (referenced.contains(cn.name)
+                    || ctx.exemptions().isClassExempt(cn.name)
+                    || (ann != null && ann.isClassExempt(cn.name))
+                    || hasExemptSuperType(cn.name, exemptSupers, inh)
+                    || (cn.access & Opcodes.ACC_MODULE) != 0) {
+                pinnedClasses.add(cn.name);
+            }
+        }
+
+        for (ClassNode cn : pool.allClassNodes()) {
+            if (pinnedClasses.contains(cn.name)) continue;
+            // Inner classes inherit the pinned status of their enclosing
+            // class. Otherwise we'd move e.g. Outer$1 (anonymous,
+            // package-private by javac convention) into 'o/aq' while
+            // Outer stays put — and then any code in Outer that touches
+            // Outer$1 raises IllegalAccessError because the two classes
+            // are no longer in the same package and the JEP 181 nest
+            // membership got broken by the move.
+            if (isInnerOfPinned(cn, pinnedClasses)) continue;
             String newName = "o/" + gen.next();
             mapping.put(cn.name, newName);
         }
+    }
+
+    /**
+     * Returns true if {@code cn} is an inner / nested / anonymous / local
+     * class whose enclosing class is in {@code pinned}. Looks at all four
+     * sources of outer-class info ASM exposes:
+     *
+     * <ol>
+     *   <li>{@code NestHost} attribute (JEP 181) — most reliable;</li>
+     *   <li>{@code EnclosingMethod} attribute ({@code outerClass}) — set
+     *       for local / anonymous classes;</li>
+     *   <li>{@code InnerClasses} attribute ({@code innerClasses}) — present
+     *       on all nested classes for binary-compatibility reasons;</li>
+     *   <li>{@code $}-separated name heuristic — last-resort, covers cases
+     *       where the class file has been stripped of debug attributes.</li>
+     * </ol>
+     */
+    private boolean isInnerOfPinned(ClassNode cn, Set<String> pinned) {
+        if (cn.nestHostClass != null && pinned.contains(cn.nestHostClass)) return true;
+        if (cn.outerClass != null && pinned.contains(cn.outerClass)) return true;
+        if (cn.innerClasses != null) {
+            for (InnerClassNode ic : cn.innerClasses) {
+                if (ic.name == null) continue;
+                if (!ic.name.equals(cn.name)) continue;
+                if (ic.outerName != null && pinned.contains(ic.outerName)) return true;
+            }
+        }
+        // Walk every '$'-segment, not just the last one. NestHost (JEP 181)
+        // would carry the outermost class for us, but pre-Java-11 classfiles
+        // don't have that attribute and InnerClasses' outerName only points
+        // to the direct parent. So `Outer$Inner$Deep` would otherwise miss
+        // the pinned `Outer` because we never added `Outer$Inner` to the
+        // pinned set (it was only skipped via this same check, transitively).
+        int dollar = cn.name.lastIndexOf('$');
+        while (dollar > 0) {
+            String outer = cn.name.substring(0, dollar);
+            if (pinned.contains(outer)) return true;
+            dollar = cn.name.lastIndexOf('$', dollar - 1);
+        }
+        return false;
+    }
+
+    /**
+     * Narrower variant for the static/private-method and field-rename
+     * loops: only treats an inner class as protected if its outer is
+     * <em>truly</em> exempt (config rule or @DoNotObfuscate). Resource-
+     * pinned and super-type-pinned outers do not count here — their own
+     * members are still being renamed, so their inners' members can be
+     * renamed too (ClassRemapper rewrites all cross-references atomically).
+     * What matters for those is keeping the inner class in the same
+     * package as the outer; that’s handled by buildClassMapping above.
+     */
+    private boolean isInnerOfExempt(ClassNode cn, ObfuscatorContext ctx, AnnotationScanner ann) {
+        if (cn.nestHostClass != null && exemptName(ctx, ann, cn.nestHostClass)) return true;
+        if (cn.outerClass != null && exemptName(ctx, ann, cn.outerClass)) return true;
+        if (cn.innerClasses != null) {
+            for (InnerClassNode ic : cn.innerClasses) {
+                if (ic.name == null) continue;
+                if (!ic.name.equals(cn.name)) continue;
+                if (ic.outerName != null && exemptName(ctx, ann, ic.outerName)) return true;
+            }
+        }
+        // See isInnerOfPinned: walk every '$'-segment for multi-level
+        // nesting on pre-Java-11 classfiles where NestHost is missing.
+        int dollar = cn.name.lastIndexOf('$');
+        while (dollar > 0) {
+            String outer = cn.name.substring(0, dollar);
+            if (exemptName(ctx, ann, outer)) return true;
+            dollar = cn.name.lastIndexOf('$', dollar - 1);
+        }
+        return false;
+    }
+
+    private static boolean exemptName(ObfuscatorContext ctx, AnnotationScanner ann, String internalName) {
+        if (ctx.exemptions().isClassExempt(internalName)) return true;
+        return ann != null && ann.isClassExempt(internalName);
     }
 
     private boolean hasExemptSuperType(String internal, Set<String> exemptSupers, InheritanceAnalyzer inh) {
@@ -358,6 +459,10 @@ public class RenamerTransformer implements Transformer {
             // sources used by buildClassMapping.
             if (ctx.exemptions().isClassExempt(cn.name)) continue;
             if (ann != null && ann.isClassExempt(cn.name)) continue;
+            // Same transitive nesting rule as buildClassMapping: an inner
+            // class of an exempt outer must not have its members renamed
+            // either, otherwise reflective lookups in the outer class break.
+            if (isInnerOfExempt(cn, ctx, ann)) continue;
             for (MethodNode mn : cn.methods) {
                 if (isVirtual(mn)) continue;
                 if (mn.name.startsWith("<")) continue;
@@ -381,6 +486,9 @@ public class RenamerTransformer implements Transformer {
             // annotation-driven class exempts.
             if (ctx.exemptions().isClassExempt(mk.owner)) return true;
             if (ann != null && ann.isClassExempt(mk.owner)) return true;
+            // Owner class is an inner class of an exempt outer.
+            ClassNode ownerNode = pool.classes().get(mk.owner);
+            if (ownerNode != null && isInnerOfExempt(ownerNode, ctx, ann)) return true;
             if (ctx.exemptions().isMethodExempt(mk.owner, mk.name, mk.desc)) return true;
             if (ann != null && ann.isMethodExempt(mk.owner, mk.name, mk.desc)) return true;
             if (mk.name.startsWith("<")) return true;
@@ -474,6 +582,11 @@ public class RenamerTransformer implements Transformer {
             // both config-rule and annotation-driven class exempts.
             if (ctx.exemptions().isClassExempt(cn.name)) continue;
             if (ann != null && ann.isClassExempt(cn.name)) continue;
+            // Inner-of-exempt protection: same reasoning as the class-rename
+            // loop. Otherwise inner classes of an exempt class get their
+            // synthetic this$0 / this$1 fields renamed and outer-class code
+            // (which keeps original names) breaks at runtime.
+            if (isInnerOfExempt(cn, ctx, ann)) continue;
             NameGenerator perClass = new NameGenerator(strat);
             for (FieldNode fn : cn.fields) {
                 if (ann != null && ann.isFieldExempt(cn.name, fn.name, fn.desc)) continue;
