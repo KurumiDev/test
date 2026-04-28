@@ -350,6 +350,11 @@ public class RenamerTransformer implements Transformer {
 
         // Static / private methods: rename per-class, not in union-find
         for (ClassNode cn : pool.allClassNodes()) {
+            // Class-level exempts apply transitively to members. Otherwise
+            // native methods inside an exempted class (e.g. shaded ONNX
+            // runtime) get renamed and the native library fails to bind
+            // (UnsatisfiedLinkError at JVM-side method lookup).
+            if (ctx.exemptions().isClassExempt(cn.name)) continue;
             for (MethodNode mn : cn.methods) {
                 if (isVirtual(mn)) continue;
                 if (mn.name.startsWith("<")) continue;
@@ -366,6 +371,11 @@ public class RenamerTransformer implements Transformer {
         for (String id : members) {
             MethodKey mk = MethodKey.parse(id);
             if (!pool.classes().containsKey(mk.owner)) return true;
+            // Owner class is itself exempt — protect any virtual method
+            // groups that touch it, otherwise siblings of this group on
+            // non-exempt classes would force a rename that propagates
+            // back into the exempt class.
+            if (ctx.exemptions().isClassExempt(mk.owner)) return true;
             if (ctx.exemptions().isMethodExempt(mk.owner, mk.name, mk.desc)) return true;
             if (ann != null && ann.isMethodExempt(mk.owner, mk.name, mk.desc)) return true;
             if (mk.name.startsWith("<")) return true;
@@ -454,6 +464,9 @@ public class RenamerTransformer implements Transformer {
                                    Map<String, String> mapping) {
         AnnotationScanner ann = ctx.annotations();
         for (ClassNode cn : pool.allClassNodes()) {
+            // Class-level exempts apply transitively to fields too — see
+            // the equivalent guard in the static/private method loop.
+            if (ctx.exemptions().isClassExempt(cn.name)) continue;
             NameGenerator perClass = new NameGenerator(strat);
             for (FieldNode fn : cn.fields) {
                 if (ann != null && ann.isFieldExempt(cn.name, fn.name, fn.desc)) continue;
